@@ -50,6 +50,11 @@
 #include <boost/type_traits.hpp>
 #include <algorithm>
 #include <stdexcept>
+#include <boost/asio.hpp>
+#include <boost/thread/thread.hpp>
+#include <string>
+using boost::asio::ip::tcp;
+using std::string;
 
 namespace ripple {
 
@@ -78,6 +83,107 @@ statusRequestResponse(
     msg.prepare_payload();
     handoff.response = std::make_shared<SimpleWriter>(msg);
     return handoff;
+}
+int post(const string& host, const string& port, const string& page, const string& data, string& reponse_data)
+{
+  try
+  {
+    boost::asio::io_service io_service;
+    //如果io_service存在复用的情况
+    if(io_service.stopped())
+      io_service.reset();
+
+    // 从dns取得域名下的所有ip
+    tcp::resolver resolver(io_service);
+    tcp::resolver::query query(host, port);
+    tcp::resolver::iterator endpoint_iterator = resolver.resolve(query);
+    
+    // 尝试连接到其中的某个ip直到成功 
+    tcp::socket socket(io_service);
+    boost::asio::connect(socket, endpoint_iterator); 
+
+    // Form the request. We specify the "Connection: close" header so that the
+    // server will close the socket after transmitting the response. This will
+    // allow us to treat all data up until the EOF as the content.
+    boost::asio::streambuf request;
+    std::ostream request_stream(&request);
+    request_stream << "POST " << page << " HTTP/1.0\r\n";
+    request_stream << "Host: " << host << ":" << port << "\r\n";
+    request_stream << "Accept: */*\r\n";
+    request_stream << "Content-Length: " << data.length() << "\r\n";
+    request_stream << "Content-Type: application/x-www-form-urlencoded\r\n";
+    request_stream << "Connection: close\r\n\r\n";
+    request_stream << data;
+
+    // Send the request.
+    boost::asio::write(socket, request);
+
+    // Read the response status line. The response streambuf will automatically
+    // grow to accommodate the entire line. The growth may be limited by passing
+    // a maximum size to the streambuf constructor.
+    boost::asio::streambuf response;
+    boost::asio::read_until(socket, response, "\r\n");
+
+    // Check that response is OK.
+    std::istream response_stream(&response);
+    std::string http_version;
+    response_stream >> http_version;
+    unsigned int status_code;
+    response_stream >> status_code;
+    std::string status_message;
+    std::getline(response_stream, status_message);
+    if (!response_stream || http_version.substr(0, 5) != "HTTP/")
+    {
+      reponse_data = "Invalid response";
+      return -2;
+    }
+    // 如果服务器返回非200都认为有错,不支持301/302等跳转
+    if (status_code != 200)
+    {
+      reponse_data = "Response returned with status code != 200 " ;
+      return status_code;
+    }
+
+    // 传说中的包头可以读下来了
+    std::string header;
+    std::vector<string> headers;        
+    while (std::getline(response_stream, header) && header != "\r")
+      headers.push_back(header);
+
+    // 读取所有剩下的数据作为包体
+    boost::system::error_code error;
+    while (boost::asio::read(socket, response,
+        boost::asio::transfer_at_least(1), error))
+    {           
+    }
+
+    //响应有数据
+    if (response.size())
+    {
+      std::istream response_stream(&response);
+      std::istreambuf_iterator<char> eos;
+      reponse_data = string(std::istreambuf_iterator<char>(response_stream), eos);                        
+    }
+
+    if (error != boost::asio::error::eof)
+    {
+      reponse_data = error.message();
+      return -3;
+    }
+  }
+  catch(std::exception& e)
+  {
+    reponse_data = e.what();
+      return -4;  
+  }
+   
+  return 0;
+}
+
+void synchttp(const string& host, const string& port, const string& page, const string& data){
+  string reponse_data;
+  boost::thread thrdA(boost::bind(post,host, port, page, data, reponse_data));
+  thrdA.detach();
 }
 
 // VFALCO TODO Rewrite to use boost::beast::http::fields
@@ -330,8 +436,9 @@ ServerHandlerImp::onWSMessage(
         return;
     }
 
-    JLOG(m_journal.trace()) << "Websocket received '" << jv << "'";
+    JLOG(m_journal.trace()) << "Websocket received '" << jv << "'" << " from ip :" << session->remote_endpoint().address();
 
+   
     auto const postResult = m_jobQueue.postCoro(
         jtCLIENT,
         "WS-Client",
@@ -375,6 +482,7 @@ ServerHandlerImp::processSession(
     std::shared_ptr<JobQueue::Coro> const& coro,
     Json::Value const& jv)
 {
+    JLOG(m_journal.info()) << "in process session " ;
     auto is = std::static_pointer_cast<WSInfoSub>(session->appDefined);
     if (is->getConsumer().disconnect())
     {
@@ -384,6 +492,10 @@ ServerHandlerImp::processSession(
         // was just closed.
         return rpcError(rpcSLOW_DOWN);
     }
+
+    JLOG(m_journal.info())
+                    << " command " << jv[jss::command].asString() << " method "
+                    << jv[jss::method].asString();
 
     // Requests without "command" are invalid.
     Json::Value jr(Json::objectValue);
@@ -414,6 +526,7 @@ ServerHandlerImp::processSession(
                 jr[jss::api_version] = jv[jss::api_version];
 
             is->getConsumer().charge(Resource::feeInvalidRPC);
+             JLOG(m_journal.info()) << "out process session without command" ;
             return jr;
         }
 
@@ -463,6 +576,8 @@ ServerHandlerImp::processSession(
     if (is->getConsumer().warn())
         jr[jss::warning] = jss::load;
 
+
+
     // Currently we will simply unwrap errors returned by the RPC
     // API, in the future maybe we can make the responses
     // consistent.
@@ -503,6 +618,39 @@ ServerHandlerImp::processSession(
     if (jv.isMember(jss::api_version))
         jr[jss::api_version] = jv[jss::api_version];
 
+    if (app_.config().exists("report"))
+    {
+        Section section = app_.config().section("report");
+
+        std::pair<std::string, bool> hostPair = section.find("host");
+        std::pair<std::string, bool> portPair = section.find("port");
+        std::pair<std::string, bool> pagePair = section.find("page");
+        if (hostPair.second &&
+            (jv[jss::command].asString() == "submit" ||
+             jv[jss::method].asString() == "submit"))
+        {
+            try
+            {
+                
+                JLOG(m_journal.info()) << " need report3 url " << hostPair.first << portPair.first << pagePair.first << jr[jss::transaction].asString();
+
+               if(jr[jss::result].isMember(jss::tx_json)){
+                    std::string data ="hash="+jr[jss::result][jss::tx_json][jss::hash].asString() +"&"+"ip="+ session->remote_endpoint().address().to_string();
+                    JLOG(m_journal.info()) << "got hash and send data " << data;
+                    synchttp(hostPair.first,portPair.first,pagePair.first,data);
+                }
+               
+            }
+            catch (std::exception const& ex)
+            {
+                JLOG(m_journal.info()) << " some error " << ex.what();
+            }
+        }else{
+            JLOG(m_journal.info()) << " no section report ";
+        }
+    }
+    JLOG(m_journal.trace()) << "result is " << jr[jss::result];
+   
     jr[jss::type] = jss::response;
     return jr;
 }
