@@ -1112,7 +1112,7 @@ struct PayStrand_test : public beast::unit_test::suite
             env(pay(alice, carol, XRP(100)),
                 path(~USD, ~XRP),
                 txflags(tfNoRippleDirect),
-                ter(temBAD_SEND_XRP_PATHS));
+                ter(temBAD_SEND_HWA_PATHS));
         }
 
         {
@@ -1131,7 +1131,7 @@ struct PayStrand_test : public beast::unit_test::suite
                 path(~USD, ~XRP),
                 sendmax(XRP(200)),
                 txflags(tfNoRippleDirect),
-                ter(temBAD_SEND_XRP_MAX));
+                ter(temBAD_SEND_HWA_MAX));
         }
     }
 
