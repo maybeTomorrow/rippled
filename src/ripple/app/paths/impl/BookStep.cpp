@@ -18,7 +18,6 @@
 //==============================================================================
 
 #include <ripple/app/paths/Credit.h>
-#include <ripple/app/paths/NodeDirectory.h>
 #include <ripple/app/paths/impl/FlatSets.h>
 #include <ripple/app/paths/impl/Steps.h>
 #include <ripple/app/tx/impl/OfferStream.h>
@@ -52,6 +51,14 @@ protected:
     bool const ownerPaysTransferFee_;
     // Mark as inactive (dry) if too many offers are consumed
     bool inactive_ = false;
+    /** Number of offers consumed or partially consumed the last time
+        the step ran, including expired and unfunded offers.
+
+        N.B. This this not the total number offers consumed by this step for the
+        entire payment, it is only the number the last time it ran. Offers may
+        be partially consumed multiple times during a payment.
+    */
+    std::uint32_t offersUsed_ = 0;
     beast::Journal const j_;
 
     struct Cache
@@ -64,7 +71,7 @@ protected:
         }
     };
 
-    boost::optional<Cache> cache_;
+    std::optional<Cache> cache_;
 
     static uint32_t
     getMaxOffersToConsume(StrandContext const& ctx)
@@ -92,19 +99,19 @@ public:
         return book_;
     }
 
-    boost::optional<EitherAmount>
+    std::optional<EitherAmount>
     cachedIn() const override
     {
         if (!cache_)
-            return boost::none;
+            return std::nullopt;
         return EitherAmount(cache_->in);
     }
 
-    boost::optional<EitherAmount>
+    std::optional<EitherAmount>
     cachedOut() const override
     {
         if (!cache_)
-            return boost::none;
+            return std::nullopt;
         return EitherAmount(cache_->out);
     }
 
@@ -115,15 +122,18 @@ public:
                                      : DebtDirection::redeems;
     }
 
-    boost::optional<Book>
+    std::optional<Book>
     bookStepBook() const override
     {
         return book_;
     }
 
-    std::pair<boost::optional<Quality>, DebtDirection>
+    std::pair<std::optional<Quality>, DebtDirection>
     qualityUpperBound(ReadView const& v, DebtDirection prevStepDir)
         const override;
+
+    std::uint32_t
+    offersUsed() const override;
 
     std::pair<TIn, TOut>
     revImp(
@@ -228,7 +238,7 @@ public:
         AccountID const&,
         AccountID const&,
         TOffer<TIn, TOut> const& offer,
-        boost::optional<Quality>&,
+        std::optional<Quality>&,
         FlowOfferStream<TIn, TOut>&,
         bool) const
     {
@@ -308,7 +318,7 @@ private:
     // Helper function that throws if the optional passed to the constructor
     // is none.
     static Quality
-    getQuality(boost::optional<Quality> const& limitQuality)
+    getQuality(std::optional<Quality> const& limitQuality)
     {
         // It's really a programming error if the quality is missing.
         assert(limitQuality);
@@ -333,7 +343,7 @@ public:
         AccountID const& strandSrc,
         AccountID const& strandDst,
         TOffer<TIn, TOut> const& offer,
-        boost::optional<Quality>& ofrQ,
+        std::optional<Quality>& ofrQ,
         FlowOfferStream<TIn, TOut>& offers,
         bool const offerAttempted) const
     {
@@ -375,7 +385,7 @@ public:
             // If no offers have been attempted yet then it's okay to move to
             // a different quality.
             if (!offerAttempted)
-                ofrQ = boost::none;
+                ofrQ = std::nullopt;
 
             // Return true so the current offer will be deleted.
             return true;
@@ -400,7 +410,7 @@ public:
         std::uint32_t trIn) const
     {
         auto const srcAcct =
-            prevStep ? prevStep->directStepSrcAcct() : boost::none;
+            prevStep ? prevStep->directStepSrcAcct() : std::nullopt;
 
         return                             // If offer crossing
             srcAcct &&                     // && prevStep is DirectI
@@ -462,7 +472,7 @@ BookStep<TIn, TOut, TDerived>::equal(Step const& rhs) const
 }
 
 template <class TIn, class TOut, class TDerived>
-std::pair<boost::optional<Quality>, DebtDirection>
+std::pair<std::optional<Quality>, DebtDirection>
 BookStep<TIn, TOut, TDerived>::qualityUpperBound(
     ReadView const& v,
     DebtDirection prevStepDir) const
@@ -473,11 +483,18 @@ BookStep<TIn, TOut, TDerived>::qualityUpperBound(
     Sandbox sb(&v, tapNONE);
     BookTip bt(sb, book_);
     if (!bt.step(j_))
-        return {boost::none, dir};
+        return {std::nullopt, dir};
 
     Quality const q = static_cast<TDerived const*>(this)->adjustQualityWithFees(
         v, bt.quality(), prevStepDir);
     return {q, dir};
+}
+
+template <class TIn, class TOut, class TDerived>
+std::uint32_t
+BookStep<TIn, TOut, TDerived>::offersUsed() const
+{
+    return offersUsed_;
 }
 
 // Adjust the offer amount and step amount subject to the given input limit
@@ -561,7 +578,7 @@ BookStep<TIn, TOut, TDerived>::forEachOffer(
 
     bool const flowCross = afView.rules().enabled(featureFlowCross);
     bool offerAttempted = false;
-    boost::optional<Quality> ofrQ;
+    std::optional<Quality> ofrQ;
     while (offers.step())
     {
         auto& offer = offers.tip();
@@ -601,7 +618,7 @@ BookStep<TIn, TOut, TDerived>::forEachOffer(
                     offers.permRmOffer(offer.key());
                     if (!offerAttempted)
                         // Change quality only if no previous offers were tried.
-                        ofrQ = boost::none;
+                        ofrQ = std::nullopt;
                     // This continue causes offers.step() to delete the offer.
                     continue;
                 }
@@ -779,6 +796,7 @@ BookStep<TIn, TOut, TDerived>::revImp(
         auto const r = forEachOffer(sb, afView, prevStepDebtDir, eachOffer);
         boost::container::flat_set<uint256> toRm = std::move(std::get<0>(r));
         std::uint32_t const offersConsumed = std::get<1>(r);
+        offersUsed_ = offersConsumed;
         SetUnion(ofrsToRm, toRm);
 
         if (offersConsumed >= maxOffersToConsume_)
@@ -948,6 +966,7 @@ BookStep<TIn, TOut, TDerived>::fwdImp(
         auto const r = forEachOffer(sb, afView, prevStepDebtDir, eachOffer);
         boost::container::flat_set<uint256> toRm = std::move(std::get<0>(r));
         std::uint32_t const offersConsumed = std::get<1>(r);
+        offersUsed_ = offersConsumed;
         SetUnion(ofrsToRm, toRm);
 
         if (offersConsumed >= maxOffersToConsume_)

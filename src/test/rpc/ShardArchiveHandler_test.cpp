@@ -17,6 +17,7 @@
 */
 //==============================================================================
 
+#include <ripple/app/rdb/RelationalDBInterface_shards.h>
 #include <ripple/beast/utility/temp_dir.h>
 #include <ripple/core/ConfigSections.h>
 #include <ripple/nodestore/DummyScheduler.h>
@@ -24,6 +25,7 @@
 #include <ripple/nodestore/impl/DecodedBlob.h>
 #include <ripple/protocol/jss.h>
 #include <ripple/rpc/ShardArchiveHandler.h>
+#include <test/jtx/CaptureLogs.h>
 #include <test/jtx/Env.h>
 #include <test/jtx/TrustedPublisherServer.h>
 #include <test/jtx/envconfig.h>
@@ -45,13 +47,15 @@ class ShardArchiveHandler_test : public beast::unit_test::suite
             env.app().getIOService(),
             list,
             env.timeKeeper().now() + std::chrono::seconds{3600},
+            // No future VLs
+            {},
             ssl);
     }
 
 public:
-    // Test the shard downloading module by initiating
-    // and completing a download and verifying the
-    // contents of the state database.
+    // Test the shard downloading module by queueing
+    // a download and verifying the contents of the
+    // state database.
     void
     testSingleDownloadAndStateDB()
     {
@@ -62,7 +66,7 @@ public:
         auto c = jtx::envconfig();
         auto& section = c->section(ConfigSection::shardDatabase());
         section.set("path", tempDir.path());
-        section.set("max_size_gb", "100");
+        section.set("max_historical_shards", "20");
         c->setupControl(true, true, true);
 
         jtx::Env env(*this, std::move(c));
@@ -78,19 +82,14 @@ public:
 
         {
             std::lock_guard<std::mutex> lock(handler->m_);
-
-            auto& session{handler->sqliteDB_->getSession()};
-
-            soci::rowset<soci::row> rs =
-                (session.prepare << "SELECT * FROM State;");
-
             std::uint64_t rowCount = 0;
 
-            for (auto it = rs.begin(); it != rs.end(); ++it, ++rowCount)
-            {
-                BEAST_EXPECT(it->get<int>(0) == 1);
-                BEAST_EXPECT(it->get<std::string>(1) == rawUrl);
-            }
+            readArchiveDB(
+                *handler->sqlDB_, [&](std::string const& url, int state) {
+                    BEAST_EXPECT(state == 1);
+                    BEAST_EXPECT(url == rawUrl);
+                    ++rowCount;
+                });
 
             BEAST_EXPECT(rowCount == 1);
         }
@@ -98,9 +97,9 @@ public:
         handler->release();
     }
 
-    // Test the shard downloading module by initiating
-    // and completing three downloads and verifying
-    // the contents of the state database.
+    // Test the shard downloading module by queueing
+    // three downloads and verifying the contents of
+    // the state database.
     void
     testDownloadsAndStateDB()
     {
@@ -111,7 +110,7 @@ public:
         auto c = jtx::envconfig();
         auto& section = c->section(ConfigSection::shardDatabase());
         section.set("path", tempDir.path());
-        section.set("max_size_gb", "100");
+        section.set("max_historical_shards", "20");
         c->setupControl(true, true, true);
 
         jtx::Env env(*this, std::move(c));
@@ -133,17 +132,14 @@ public:
 
         {
             std::lock_guard<std::mutex> lock(handler->m_);
-
-            auto& session{handler->sqliteDB_->getSession()};
-            soci::rowset<soci::row> rs =
-                (session.prepare << "SELECT * FROM State;");
-
             std::uint64_t pos = 0;
-            for (auto it = rs.begin(); it != rs.end(); ++it, ++pos)
-            {
-                BEAST_EXPECT(it->get<int>(0) == dl[pos].first);
-                BEAST_EXPECT(it->get<std::string>(1) == dl[pos].second);
-            }
+
+            readArchiveDB(
+                *handler->sqlDB_, [&](std::string const& url, int state) {
+                    BEAST_EXPECT(state == dl[pos].first);
+                    BEAST_EXPECT(url == dl[pos].second);
+                    ++pos;
+                });
 
             BEAST_EXPECT(pos == dl.size());
         }
@@ -163,13 +159,18 @@ public:
         beast::temp_dir tempDir;
 
         auto c = jtx::envconfig();
-        auto& section = c->section(ConfigSection::shardDatabase());
-        section.set("path", tempDir.path());
-        section.set("max_size_gb", "100");
-        section.set("ledgers_per_shard", "256");
-        section.set("earliest_seq", "257");
-        auto& sectionNode = c->section(ConfigSection::nodeDatabase());
-        sectionNode.set("earliest_seq", "257");
+        {
+            auto& section{c->section(ConfigSection::shardDatabase())};
+            section.set("path", tempDir.path());
+            section.set("max_historical_shards", "20");
+            section.set("ledgers_per_shard", "256");
+            section.set("earliest_seq", "257");
+        }
+        {
+            auto& section{c->section(ConfigSection::nodeDatabase())};
+            section.set("ledgers_per_shard", "256");
+            section.set("earliest_seq", "257");
+        }
         c->setupControl(true, true, true);
 
         jtx::Env env(*this, std::move(c));
@@ -261,13 +262,18 @@ public:
 
         {
             auto c = jtx::envconfig();
-            auto& section = c->section(ConfigSection::shardDatabase());
-            section.set("path", tempDir.path());
-            section.set("max_size_gb", "100");
-            section.set("ledgers_per_shard", "256");
-            section.set("earliest_seq", "257");
-            auto& sectionNode = c->section(ConfigSection::nodeDatabase());
-            sectionNode.set("earliest_seq", "257");
+            {
+                auto& section{c->section(ConfigSection::shardDatabase())};
+                section.set("path", tempDir.path());
+                section.set("max_historical_shards", "20");
+                section.set("ledgers_per_shard", "256");
+                section.set("earliest_seq", "257");
+            }
+            {
+                auto& section{c->section(ConfigSection::nodeDatabase())};
+                section.set("ledgers_per_shard", "256");
+                section.set("earliest_seq", "257");
+            }
             c->setupControl(true, true, true);
 
             jtx::Env env(*this, std::move(c));
@@ -358,19 +364,23 @@ public:
         }
 
         auto c = jtx::envconfig();
-        auto& section = c->section(ConfigSection::shardDatabase());
-        section.set("path", tempDir.path());
-        section.set("max_size_gb", "100");
-        section.set("ledgers_per_shard", "256");
-        section.set("shard_verification_retry_interval", "1");
-        section.set("shard_verification_max_attempts", "10000");
-        section.set("earliest_seq", "257");
-        auto& sectionNode = c->section(ConfigSection::nodeDatabase());
-        sectionNode.set("earliest_seq", "257");
+        {
+            auto& section{c->section(ConfigSection::shardDatabase())};
+            section.set("path", tempDir.path());
+            section.set("max_historical_shards", "20");
+            section.set("shard_verification_retry_interval", "1");
+            section.set("shard_verification_max_attempts", "10000");
+            section.set("ledgers_per_shard", "256");
+            section.set("earliest_seq", "257");
+        }
+        {
+            auto& section{c->section(ConfigSection::nodeDatabase())};
+            section.set("ledgers_per_shard", "256");
+            section.set("earliest_seq", "257");
+        }
         c->setupControl(true, true, true);
 
         jtx::Env env(*this, std::move(c));
-
         std::uint8_t const numberOfDownloads = 10;
 
         // Create some ledgers so that the ShardArchiveHandler
@@ -414,6 +424,266 @@ public:
         BEAST_EXPECT(!boost::filesystem::exists(stateDir));
     }
 
+    // Ensure that downloads fail when the shard
+    // database cannot store any more shards
+    void
+    testShardCountFailure()
+    {
+        testcase("testShardCountFailure");
+        std::string capturedLogs;
+
+        {
+            beast::temp_dir tempDir;
+
+            auto c = jtx::envconfig();
+            {
+                auto& section{c->section(ConfigSection::shardDatabase())};
+                section.set("path", tempDir.path());
+                section.set("max_historical_shards", "1");
+                section.set("ledgers_per_shard", "256");
+                section.set("earliest_seq", "257");
+            }
+            {
+                auto& section{c->section(ConfigSection::nodeDatabase())};
+                section.set("ledgers_per_shard", "256");
+                section.set("earliest_seq", "257");
+            }
+            c->setupControl(true, true, true);
+
+            std::unique_ptr<Logs> logs(new CaptureLogs(&capturedLogs));
+            jtx::Env env(*this, std::move(c), std::move(logs));
+
+            std::uint8_t const numberOfDownloads = 10;
+
+            // Create some ledgers so that the ShardArchiveHandler
+            // can verify the last ledger hash for the shard
+            // downloads.
+            for (int i = 0; i < env.app().getShardStore()->ledgersPerShard() *
+                     (numberOfDownloads + 1);
+                 ++i)
+            {
+                env.close();
+            }
+
+            auto handler = env.app().getShardArchiveHandler();
+            BEAST_EXPECT(handler);
+            BEAST_EXPECT(
+                dynamic_cast<RPC::RecoveryHandler*>(handler) == nullptr);
+
+            auto server = createServer(env);
+            auto host = server->local_endpoint().address().to_string();
+            auto port = std::to_string(server->local_endpoint().port());
+            server->stop();
+
+            Downloads const dl = [count = numberOfDownloads, &host, &port] {
+                Downloads ret;
+
+                for (int i = 1; i <= count; ++i)
+                {
+                    ret.push_back(
+                        {i,
+                         (boost::format("https://%s:%d/%d.tar.lz4") % host %
+                          port % i)
+                             .str()});
+                }
+
+                return ret;
+            }();
+
+            for (auto const& entry : dl)
+            {
+                parsedURL url;
+                parseUrl(url, entry.second);
+                handler->add(entry.first, {url, entry.second});
+            }
+
+            BEAST_EXPECT(!handler->start());
+            auto stateDir = RPC::ShardArchiveHandler::getDownloadDirectory(
+                env.app().config());
+
+            handler->release();
+            BEAST_EXPECT(!boost::filesystem::exists(stateDir));
+        }
+
+        auto const expectedErrorMessage =
+            "shards 1, 2, 3, 4, 5, 6, 7, 8, 9, 10 maximum number of historical "
+            "shards reached";
+        BEAST_EXPECT(
+            capturedLogs.find(expectedErrorMessage) != std::string::npos);
+
+        {
+            beast::temp_dir tempDir;
+
+            auto c = jtx::envconfig();
+            {
+                auto& section{c->section(ConfigSection::shardDatabase())};
+                section.set("path", tempDir.path());
+                section.set("max_historical_shards", "0");
+                section.set("ledgers_per_shard", "256");
+                section.set("earliest_seq", "257");
+            }
+            {
+                auto& section{c->section(ConfigSection::nodeDatabase())};
+                section.set("ledgers_per_shard", "256");
+                section.set("earliest_seq", "257");
+            }
+            c->setupControl(true, true, true);
+
+            std::unique_ptr<Logs> logs(new CaptureLogs(&capturedLogs));
+            jtx::Env env(*this, std::move(c), std::move(logs));
+
+            std::uint8_t const numberOfDownloads = 1;
+
+            // Create some ledgers so that the ShardArchiveHandler
+            // can verify the last ledger hash for the shard
+            // downloads.
+            for (int i = 0; i < env.app().getShardStore()->ledgersPerShard() *
+                     ((numberOfDownloads * 3) + 1);
+                 ++i)
+            {
+                env.close();
+            }
+
+            auto handler = env.app().getShardArchiveHandler();
+            BEAST_EXPECT(handler);
+            BEAST_EXPECT(
+                dynamic_cast<RPC::RecoveryHandler*>(handler) == nullptr);
+
+            auto server = createServer(env);
+            auto host = server->local_endpoint().address().to_string();
+            auto port = std::to_string(server->local_endpoint().port());
+            server->stop();
+
+            Downloads const dl = [count = numberOfDownloads, &host, &port] {
+                Downloads ret;
+
+                for (int i = 1; i <= count; ++i)
+                {
+                    ret.push_back(
+                        {i,
+                         (boost::format("https://%s:%d/%d.tar.lz4") % host %
+                          port % i)
+                             .str()});
+                }
+
+                return ret;
+            }();
+
+            for (auto const& entry : dl)
+            {
+                parsedURL url;
+                parseUrl(url, entry.second);
+                handler->add(entry.first, {url, entry.second});
+            }
+
+            BEAST_EXPECT(!handler->start());
+            auto stateDir = RPC::ShardArchiveHandler::getDownloadDirectory(
+                env.app().config());
+
+            handler->release();
+            BEAST_EXPECT(!boost::filesystem::exists(stateDir));
+        }
+
+        auto const expectedErrorMessage2 =
+            "shard 1 maximum number of historical shards reached";
+        BEAST_EXPECT(
+            capturedLogs.find(expectedErrorMessage2) != std::string::npos);
+    }
+
+    // Ensure that downloads fail when the shard
+    // database has already stored one of the
+    // queued shards
+    void
+    testRedundantShardFailure()
+    {
+        testcase("testRedundantShardFailure");
+        std::string capturedLogs;
+
+        {
+            beast::temp_dir tempDir;
+
+            auto c = jtx::envconfig();
+            {
+                auto& section{c->section(ConfigSection::shardDatabase())};
+                section.set("path", tempDir.path());
+                section.set("max_historical_shards", "1");
+                section.set("ledgers_per_shard", "256");
+                section.set("earliest_seq", "257");
+            }
+            {
+                auto& section{c->section(ConfigSection::nodeDatabase())};
+                section.set("ledgers_per_shard", "256");
+                section.set("earliest_seq", "257");
+            }
+            c->setupControl(true, true, true);
+
+            std::unique_ptr<Logs> logs(new CaptureLogs(&capturedLogs));
+            jtx::Env env(
+                *this,
+                std::move(c),
+                std::move(logs),
+                beast::severities::kDebug);
+
+            std::uint8_t const numberOfDownloads = 10;
+
+            // Create some ledgers so that the ShardArchiveHandler
+            // can verify the last ledger hash for the shard
+            // downloads.
+            for (int i = 0; i < env.app().getShardStore()->ledgersPerShard() *
+                     (numberOfDownloads + 1);
+                 ++i)
+            {
+                env.close();
+            }
+
+            BEAST_EXPECT(env.app().getShardStore()->prepareShards({1}));
+
+            auto handler = env.app().getShardArchiveHandler();
+            BEAST_EXPECT(handler);
+            BEAST_EXPECT(
+                dynamic_cast<RPC::RecoveryHandler*>(handler) == nullptr);
+
+            auto server = createServer(env);
+            auto host = server->local_endpoint().address().to_string();
+            auto port = std::to_string(server->local_endpoint().port());
+            server->stop();
+
+            Downloads const dl = [count = numberOfDownloads, &host, &port] {
+                Downloads ret;
+
+                for (int i = 1; i <= count; ++i)
+                {
+                    ret.push_back(
+                        {i,
+                         (boost::format("https://%s:%d/%d.tar.lz4") % host %
+                          port % i)
+                             .str()});
+                }
+
+                return ret;
+            }();
+
+            for (auto const& entry : dl)
+            {
+                parsedURL url;
+                parseUrl(url, entry.second);
+                handler->add(entry.first, {url, entry.second});
+            }
+
+            BEAST_EXPECT(!handler->start());
+            auto stateDir = RPC::ShardArchiveHandler::getDownloadDirectory(
+                env.app().config());
+
+            handler->release();
+            BEAST_EXPECT(!boost::filesystem::exists(stateDir));
+        }
+
+        auto const expectedErrorMessage =
+            "shard 1 is already queued for import";
+        BEAST_EXPECT(
+            capturedLogs.find(expectedErrorMessage) != std::string::npos);
+    }
+
     void
     run() override
     {
@@ -421,10 +691,12 @@ public:
         testDownloadsAndStateDB();
         testDownloadsAndFileSystem();
         testDownloadsAndRestart();
+        testShardCountFailure();
+        testRedundantShardFailure();
     }
 };
 
-BEAST_DEFINE_TESTSUITE(ShardArchiveHandler, app, ripple);
+BEAST_DEFINE_TESTSUITE_PRIO(ShardArchiveHandler, app, ripple, 3);
 
 }  // namespace test
 }  // namespace ripple

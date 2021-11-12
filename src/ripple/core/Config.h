@@ -29,11 +29,11 @@
 #include <boost/beast/core/string.hpp>
 #include <boost/filesystem.hpp>  // VFALCO FIX: This include should not be here
 #include <boost/lexical_cast.hpp>
-#include <boost/optional.hpp>
 #include <algorithm>
 #include <chrono>
 #include <cstdint>
 #include <map>
+#include <optional>
 #include <string>
 #include <type_traits>
 #include <unordered_set>
@@ -52,11 +52,12 @@ enum class SizedItem : std::size_t {
     ledgerSize,
     ledgerAge,
     ledgerFetch,
-    nodeCacheSize,
-    nodeCacheAge,
     hashNodeDBCache,
     txnDBCache,
-    lgrDBCache
+    lgrDBCache,
+    openFinalLimit,
+    burstSize,
+    ramSizeGB
 };
 
 //  This entire derived class is deprecated.
@@ -102,6 +103,12 @@ private:
     */
     bool RUN_STANDALONE = false;
 
+    bool RUN_REPORTING = false;
+
+    bool REPORTING_READ_ONLY = false;
+
+    bool USE_TX_TABLES = true;
+
     /** Determines if the server will sign a tx, given an account's secret seed.
 
         In the past, this was allowed, but this functionality can have security
@@ -110,10 +117,12 @@ private:
     */
     bool signingEnabled_ = false;
 
+    // The amount of RAM, in bytes, that we detected on this system.
+    std::uint64_t const ramSize_;
+
 public:
     bool doImport = false;
     bool nodeToShard = false;
-    bool validateShards = false;
     bool ELB_SUPPORT = false;
 
     std::vector<std::string> IPS;           // Peer IPs from rippled.cfg.
@@ -142,9 +151,14 @@ public:
 
     // True to ask peers not to relay current IP.
     bool PEER_PRIVATE = false;
+    // peers_max is a legacy configuration, which is going to be replaced
+    // with individual inbound peers peers_in_max and outbound peers
+    // peers_out_max configuration. for now we support both the legacy and
+    // the new configuration. if peers_max is configured then peers_in_max and
+    // peers_out_max are ignored.
     std::size_t PEERS_MAX = 0;
-
-    std::chrono::seconds WEBSOCKET_PING_FREQ = std::chrono::minutes{5};
+    std::size_t PEERS_OUT_MAX = 0;
+    std::size_t PEERS_IN_MAX = 0;
 
     // Path searching
     int PATH_SEARCH_OLD = 7;
@@ -153,7 +167,7 @@ public:
     int PATH_SEARCH_MAX = 10;
 
     // Validation
-    boost::optional<std::size_t>
+    std::optional<std::size_t>
         VALIDATION_QUORUM;  // validations to consider ledger authoritative
 
     XRPAmount FEE_DEFAULT{10};
@@ -164,6 +178,9 @@ public:
     std::uint32_t LEDGER_HISTORY = 256;
     std::uint32_t FETCH_DEPTH = 1000000000;
 
+    // Tunable that adjusts various parameters, typically associated
+    // with hardware parameters (RAM size and CPU cores). The default
+    // is 'tiny'.
     std::size_t NODE_SIZE = 0;
 
     bool SSL_VERIFY = true;
@@ -173,21 +190,67 @@ public:
     // Compression
     bool COMPRESSION = false;
 
+    // Enable the experimental Ledger Replay functionality
+    bool LEDGER_REPLAY = false;
+
+    // Work queue limits
+    int MAX_TRANSACTIONS = 250;
+    static constexpr int MAX_JOB_QUEUE_TX = 1000;
+    static constexpr int MIN_JOB_QUEUE_TX = 100;
+
     // Amendment majority time
     std::chrono::seconds AMENDMENT_MAJORITY_TIME = defaultAmendmentMajorityTime;
 
     // Thread pool configuration
     std::size_t WORKERS = 0;
 
+    // Reduce-relay - these parameters are experimental.
+    // Enable reduce-relay features
+    // Validation/proposal reduce-relay feature
+    bool VP_REDUCE_RELAY_ENABLE = false;
+    // Send squelch message to peers. Generally this config should
+    // have the same value as VP_REDUCE_RELAY_ENABLE. It can be
+    // used for testing the feature's function without
+    // affecting the message relaying. To use it for testing,
+    // set it to false and set VP_REDUCE_RELAY_ENABLE to true.
+    // Squelch messages will not be sent to the peers in this case.
+    // Set log level to debug so that the feature function can be
+    // analyzed.
+    bool VP_REDUCE_RELAY_SQUELCH = false;
+    // Transaction reduce-relay feature
+    bool TX_REDUCE_RELAY_ENABLE = false;
+    // If tx reduce-relay feature is disabled
+    // and this flag is enabled then some
+    // tx-related metrics is collected. It
+    // is ignored if tx reduce-relay feature is
+    // enabled. It is used in debugging to compare
+    // metrics with the feature disabled/enabled.
+    bool TX_REDUCE_RELAY_METRICS = false;
+    // Minimum peers a server should have before
+    // selecting random peers
+    std::size_t TX_REDUCE_RELAY_MIN_PEERS = 20;
+    // Percentage of peers with the tx reduce-relay feature enabled
+    // to relay to out of total active peers
+    std::size_t TX_RELAY_PERCENTAGE = 25;
+
     // These override the command line client settings
-    boost::optional<beast::IP::Endpoint> rpc_ip;
+    std::optional<beast::IP::Endpoint> rpc_ip;
 
     std::unordered_set<uint256, beast::uhash<>> features;
 
+    std::string SERVER_DOMAIN;
+
+    // How long can a peer remain in the "unknown" state
+    std::chrono::seconds MAX_UNKNOWN_TIME{600};
+
+    // How long can a peer remain in the "diverged" state
+    std::chrono::seconds MAX_DIVERGED_TIME{300};
+
+    // Enable the beta API version
+    bool BETA_RPC_API = false;
+
 public:
-    Config() : j_{beast::Journal::getNullSink()}
-    {
-    }
+    Config();
 
     /* Be very careful to make sure these bool params
         are in the right order. */
@@ -197,6 +260,7 @@ public:
         bool bQuiet,
         bool bSilent,
         bool bStandalone);
+
     void
     setupControl(bool bQuiet, bool bSilent, bool bStandalone);
 
@@ -223,6 +287,29 @@ public:
     {
         return RUN_STANDALONE;
     }
+    bool
+    reporting() const
+    {
+        return RUN_REPORTING;
+    }
+
+    bool
+    useTxTables() const
+    {
+        return USE_TX_TABLES;
+    }
+
+    bool
+    reportingReadOnly() const
+    {
+        return REPORTING_READ_ONLY;
+    }
+
+    void
+    setReportingReadOnly(bool b)
+    {
+        REPORTING_READ_ONLY = b;
+    }
 
     bool
     canSign() const
@@ -248,7 +335,7 @@ public:
               defaults in the code for every case.
     */
     int
-    getValueFor(SizedItem item, boost::optional<std::size_t> node = boost::none)
+    getValueFor(SizedItem item, std::optional<std::size_t> node = std::nullopt)
         const;
 };
 

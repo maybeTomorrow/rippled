@@ -20,25 +20,33 @@
 #include <ripple/app/ledger/Ledger.h>
 #include <ripple/basics/chrono.h>
 #include <ripple/beast/core/CurrentThreadName.h>
+#include <ripple/json/json_value.h>
 #include <ripple/nodestore/Database.h>
 #include <ripple/protocol/HashPrefix.h>
+#include <ripple/protocol/jss.h>
+#include <chrono>
 
 namespace ripple {
 namespace NodeStore {
 
 Database::Database(
-    std::string name,
-    Stoppable& parent,
     Scheduler& scheduler,
     int readThreads,
     Section const& config,
     beast::Journal journal)
-    : Stoppable(name, parent.getRoot())
-    , j_(journal)
+    : j_(journal)
     , scheduler_(scheduler)
+    , ledgersPerShard_(get<std::uint32_t>(
+          config,
+          "ledgers_per_shard",
+          DEFAULT_LEDGERS_PER_SHARD))
     , earliestLedgerSeq_(
           get<std::uint32_t>(config, "earliest_seq", XRP_LEDGER_EARLIEST_SEQ))
+    , earliestShardIndex_((earliestLedgerSeq_ - 1) / ledgersPerShard_)
 {
+    if (ledgersPerShard_ == 0 || ledgersPerShard_ % 256 != 0)
+        Throw<std::runtime_error>("Invalid ledgers_per_shard");
+
     if (earliestLedgerSeq_ < 1)
         Throw<std::runtime_error>("Invalid earliest_seq");
 
@@ -49,57 +57,46 @@ Database::Database(
 Database::~Database()
 {
     // NOTE!
-    // Any derived class should call the stopThreads() method in its
+    // Any derived class should call the stop() method in its
     // destructor.  Otherwise, occasionally, the derived class may
     // crash during shutdown when its members are accessed by one of
     // these threads after the derived class is destroyed but before
     // this base class is destroyed.
-    stopThreads();
+    stop();
 }
 
-void
-Database::waitReads()
+bool
+Database::isStopping() const
 {
-    std::unique_lock<std::mutex> lock(readLock_);
-    // Wake in two generations.
-    // Each generation is a full pass over the space.
-    // If we're in generation N and you issue a request,
-    // that request will only be done during generation N
-    // if it happens to land after where the pass currently is.
-    // But, if not, it will definitely be done during generation
-    // N+1 since the request was in the table before that pass
-    // even started. So when you reach generation N+2,
-    // you know the request is done.
-    std::uint64_t const wakeGen = readGen_ + 2;
-    while (!readShut_ && !read_.empty() && (readGen_ < wakeGen))
-        readGenCondVar_.wait(lock);
+    std::lock_guard lock(readLock_);
+    return readStopping_;
+}
+
+std::uint32_t
+Database::maxLedgers(std::uint32_t shardIndex) const noexcept
+{
+    if (shardIndex > earliestShardIndex_)
+        return ledgersPerShard_;
+
+    if (shardIndex == earliestShardIndex_)
+        return lastLedgerSeq(shardIndex) - firstLedgerSeq(shardIndex) + 1;
+
+    assert(!"Invalid shard index");
+    return 0;
 }
 
 void
-Database::onStop()
+Database::stop()
 {
     // After stop time we can no longer use the JobQueue for background
     // reads.  Join the background read threads.
-    stopThreads();
-}
-
-void
-Database::onChildrenStopped()
-{
-    stopped();
-}
-
-void
-Database::stopThreads()
-{
     {
         std::lock_guard lock(readLock_);
-        if (readShut_)  // Only stop threads once.
+        if (readStopping_)  // Only stop threads once.
             return;
 
-        readShut_ = true;
+        readStopping_ = true;
         readCondVar_.notify_all();
-        readGenCondVar_.notify_all();
     }
 
     for (auto& e : readThreads_)
@@ -109,180 +106,121 @@ Database::stopThreads()
 void
 Database::asyncFetch(
     uint256 const& hash,
-    std::uint32_t seq,
-    std::shared_ptr<TaggedCache<uint256, NodeObject>> const& pCache,
-    std::shared_ptr<KeyCache<uint256>> const& nCache)
+    std::uint32_t ledgerSeq,
+    std::function<void(std::shared_ptr<NodeObject> const&)>&& cb)
 {
     // Post a read
     std::lock_guard lock(readLock_);
-    if (read_.emplace(hash, std::make_tuple(seq, pCache, nCache)).second)
-        readCondVar_.notify_one();
-}
-
-std::shared_ptr<NodeObject>
-Database::fetchInternal(uint256 const& hash, std::shared_ptr<Backend> backend)
-{
-    std::shared_ptr<NodeObject> nObj;
-    Status status;
-    try
-    {
-        status = backend->fetch(hash.begin(), &nObj);
-    }
-    catch (std::exception const& e)
-    {
-        JLOG(j_.fatal()) << "Exception, " << e.what();
-        Rethrow();
-    }
-
-    switch (status)
-    {
-        case ok:
-            ++fetchHitCount_;
-            if (nObj)
-                fetchSz_ += nObj->getData().size();
-            break;
-        case notFound:
-            break;
-        case dataCorrupt:
-            // VFALCO TODO Deal with encountering corrupt data!
-            JLOG(j_.fatal()) << "Corrupt NodeObject #" << hash;
-            break;
-        default:
-            JLOG(j_.warn()) << "Unknown status=" << status;
-            break;
-    }
-    return nObj;
+    read_[hash].emplace_back(ledgerSeq, std::move(cb));
+    readCondVar_.notify_one();
 }
 
 void
 Database::importInternal(Backend& dstBackend, Database& srcDB)
 {
-    Batch b;
-    b.reserve(batchWritePreallocationSize);
-    srcDB.for_each([&](std::shared_ptr<NodeObject> nObj) {
-        assert(nObj);
-        if (!nObj)  // This should never happen
+    Batch batch;
+    batch.reserve(batchWritePreallocationSize);
+    auto storeBatch = [&, fname = __func__]() {
+        try
+        {
+            dstBackend.storeBatch(batch);
+        }
+        catch (std::exception const& e)
+        {
+            JLOG(j_.error()) << "Exception caught in function " << fname
+                             << ". Error: " << e.what();
+            return;
+        }
+
+        std::uint64_t sz{0};
+        for (auto const& nodeObject : batch)
+            sz += nodeObject->getData().size();
+        storeStats(batch.size(), sz);
+        batch.clear();
+    };
+
+    srcDB.for_each([&](std::shared_ptr<NodeObject> nodeObject) {
+        assert(nodeObject);
+        if (!nodeObject)  // This should never happen
             return;
 
-        ++storeCount_;
-        storeSz_ += nObj->getData().size();
-
-        b.push_back(nObj);
-        if (b.size() >= batchWritePreallocationSize)
-        {
-            dstBackend.storeBatch(b);
-            b.clear();
-            b.reserve(batchWritePreallocationSize);
-        }
+        batch.emplace_back(std::move(nodeObject));
+        if (batch.size() >= batchWritePreallocationSize)
+            storeBatch();
     });
-    if (!b.empty())
-        dstBackend.storeBatch(b);
+
+    if (!batch.empty())
+        storeBatch();
 }
 
 // Perform a fetch and report the time it took
 std::shared_ptr<NodeObject>
-Database::doFetch(
+Database::fetchNodeObject(
     uint256 const& hash,
-    std::uint32_t seq,
-    TaggedCache<uint256, NodeObject>& pCache,
-    KeyCache<uint256>& nCache,
-    bool isAsync)
+    std::uint32_t ledgerSeq,
+    FetchType fetchType)
 {
-    FetchReport report;
-    report.isAsync = isAsync;
-    report.wentToDisk = false;
+    FetchReport fetchReport(fetchType);
 
     using namespace std::chrono;
-    auto const before = steady_clock::now();
+    auto const begin{steady_clock::now()};
 
-    // See if the object already exists in the cache
-    auto nObj = pCache.fetch(hash);
-    if (!nObj && !nCache.touch_if_exists(hash))
+    auto nodeObject{fetchNodeObject(hash, ledgerSeq, fetchReport)};
+    if (nodeObject)
     {
-        // Try the database(s)
-        report.wentToDisk = true;
-        nObj = fetchFrom(hash, seq);
-        ++fetchTotalCount_;
-        if (!nObj)
-        {
-            // Just in case a write occurred
-            nObj = pCache.fetch(hash);
-            if (!nObj)
-                // We give up
-                nCache.insert(hash);
-        }
-        else
-        {
-            // Ensure all threads get the same object
-            pCache.canonicalize_replace_client(hash, nObj);
-
-            // Since this was a 'hard' fetch, we will log it.
-            JLOG(j_.trace()) << "HOS: " << hash << " fetch: in db";
-        }
+        ++fetchHitCount_;
+        fetchSz_ += nodeObject->getData().size();
     }
-    report.wasFound = static_cast<bool>(nObj);
-    report.elapsed = duration_cast<milliseconds>(steady_clock::now() - before);
-    scheduler_.onFetch(report);
-    return nObj;
+    ++fetchTotalCount_;
+
+    fetchReport.elapsed =
+        duration_cast<milliseconds>(steady_clock::now() - begin);
+    scheduler_.onFetch(fetchReport);
+    return nodeObject;
 }
 
 bool
 Database::storeLedger(
     Ledger const& srcLedger,
-    std::shared_ptr<Backend> dstBackend,
-    std::shared_ptr<TaggedCache<uint256, NodeObject>> dstPCache,
-    std::shared_ptr<KeyCache<uint256>> dstNCache,
-    std::shared_ptr<Ledger const> next)
+    std::shared_ptr<Backend> dstBackend)
 {
-    assert(static_cast<bool>(dstPCache) == static_cast<bool>(dstNCache));
-    if (srcLedger.info().hash.isZero() || srcLedger.info().accountHash.isZero())
-    {
-        assert(false);
-        JLOG(j_.error()) << "source ledger seq " << srcLedger.info().seq
-                         << " is invalid";
+    auto fail = [&](std::string const& msg) {
+        JLOG(j_.error()) << "Source ledger sequence " << srcLedger.info().seq
+                         << ". " << msg;
         return false;
-    }
+    };
+
+    if (srcLedger.info().hash.isZero())
+        return fail("Invalid hash");
+    if (srcLedger.info().accountHash.isZero())
+        return fail("Invalid account hash");
+
     auto& srcDB = const_cast<Database&>(srcLedger.stateMap().family().db());
     if (&srcDB == this)
-    {
-        assert(false);
-        JLOG(j_.error()) << "source and destination databases are the same";
-        return false;
-    }
+        return fail("Source and destination databases are the same");
 
     Batch batch;
     batch.reserve(batchWritePreallocationSize);
-    auto storeBatch = [&]() {
-        if (dstPCache && dstNCache)
+    auto storeBatch = [&, fname = __func__]() {
+        std::uint64_t sz{0};
+        for (auto const& nodeObject : batch)
+            sz += nodeObject->getData().size();
+
+        try
         {
-            for (auto& nObj : batch)
-            {
-                dstPCache->canonicalize_replace_cache(nObj->getHash(), nObj);
-                dstNCache->erase(nObj->getHash());
-                storeStats(nObj->getData().size());
-            }
+            dstBackend->storeBatch(batch);
         }
-        dstBackend->storeBatch(batch);
+        catch (std::exception const& e)
+        {
+            fail(
+                std::string("Exception caught in function ") + fname +
+                ". Error: " + e.what());
+            return false;
+        }
+
+        storeStats(batch.size(), sz);
         batch.clear();
-        batch.reserve(batchWritePreallocationSize);
-    };
-    bool error = false;
-    auto visit = [&](SHAMapAbstractNode& node) {
-        if (auto nObj = srcDB.fetch(
-                node.getNodeHash().as_uint256(), srcLedger.info().seq))
-        {
-            batch.emplace_back(std::move(nObj));
-            if (batch.size() < batchWritePreallocationSize)
-                return true;
-
-            storeBatch();
-
-            if (!isStopping())
-                return true;
-        }
-
-        error = true;
-        return false;
+        return true;
     };
 
     // Store ledger header
@@ -295,43 +233,48 @@ Database::storeLedger(
         batch.emplace_back(std::move(nObj));
     }
 
+    bool error = false;
+    auto visit = [&](SHAMapTreeNode& node) {
+        if (!isStopping())
+        {
+            if (auto nodeObject = srcDB.fetchNodeObject(
+                    node.getHash().as_uint256(), srcLedger.info().seq))
+            {
+                batch.emplace_back(std::move(nodeObject));
+                if (batch.size() < batchWritePreallocationSize || storeBatch())
+                    return true;
+            }
+        }
+
+        error = true;
+        return false;
+    };
+
     // Store the state map
     if (srcLedger.stateMap().getHash().isNonZero())
     {
         if (!srcLedger.stateMap().isValid())
-        {
-            JLOG(j_.error()) << "source ledger seq " << srcLedger.info().seq
-                             << " state map invalid";
-            return false;
-        }
-        if (next && next->info().parentHash == srcLedger.info().hash)
-        {
-            auto have = next->stateMap().snapShot(false);
-            srcLedger.stateMap().snapShot(false)->visitDifferences(
-                &(*have), visit);
-        }
-        else
-            srcLedger.stateMap().snapShot(false)->visitNodes(visit);
+            return fail("Invalid state map");
+
+        srcLedger.stateMap().snapShot(false)->visitNodes(visit);
         if (error)
-            return false;
+            return fail("Failed to store state map");
     }
 
     // Store the transaction map
     if (srcLedger.info().txHash.isNonZero())
     {
         if (!srcLedger.txMap().isValid())
-        {
-            JLOG(j_.error()) << "source ledger seq " << srcLedger.info().seq
-                             << " transaction map invalid";
-            return false;
-        }
+            return fail("Invalid transaction map");
+
         srcLedger.txMap().snapShot(false)->visitNodes(visit);
         if (error)
-            return false;
+            return fail("Failed to store transaction map");
     }
 
-    if (!batch.empty())
-        storeBatch();
+    if (!batch.empty() && !storeBatch())
+        return fail("Failed to store");
+
     return true;
 }
 
@@ -343,40 +286,63 @@ Database::threadEntry()
     while (true)
     {
         uint256 lastHash;
-        std::uint32_t lastSeq;
-        std::shared_ptr<TaggedCache<uint256, NodeObject>> lastPcache;
-        std::shared_ptr<KeyCache<uint256>> lastNcache;
+        std::vector<std::pair<
+            std::uint32_t,
+            std::function<void(std::shared_ptr<NodeObject> const&)>>>
+            entry;
+
         {
             std::unique_lock<std::mutex> lock(readLock_);
-            while (!readShut_ && read_.empty())
-            {
-                // All work is done
-                readGenCondVar_.notify_all();
-                readCondVar_.wait(lock);
-            }
-            if (readShut_)
+            readCondVar_.wait(
+                lock, [this] { return readStopping_ || !read_.empty(); });
+            if (readStopping_)
                 break;
 
             // Read in key order to make the back end more efficient
             auto it = read_.lower_bound(readLastHash_);
             if (it == read_.end())
             {
+                // start over from the beginning
                 it = read_.begin();
-                // A generation has completed
-                ++readGen_;
-                readGenCondVar_.notify_all();
             }
             lastHash = it->first;
-            lastSeq = std::get<0>(it->second);
-            lastPcache = std::get<1>(it->second).lock();
-            lastNcache = std::get<2>(it->second).lock();
+            entry = std::move(it->second);
             read_.erase(it);
             readLastHash_ = lastHash;
         }
 
-        // Perform the read
-        if (lastPcache && lastNcache)
-            doFetch(lastHash, lastSeq, *lastPcache, *lastNcache, true);
+        auto seq = entry[0].first;
+        auto obj = fetchNodeObject(lastHash, seq, FetchType::async);
+
+        for (auto const& req : entry)
+        {
+            if ((seq == req.first) || isSameDB(req.first, seq))
+                req.second(obj);
+            else
+                req.second(
+                    fetchNodeObject(lastHash, req.first, FetchType::async));
+        }
+    }
+}
+
+void
+Database::getCountsJson(Json::Value& obj)
+{
+    assert(obj.isObject());
+    obj[jss::node_writes] = std::to_string(storeCount_);
+    obj[jss::node_reads_total] = std::to_string(fetchTotalCount_);
+    obj[jss::node_reads_hit] = std::to_string(fetchHitCount_);
+    obj[jss::node_written_bytes] = std::to_string(storeSz_);
+    obj[jss::node_read_bytes] = std::to_string(fetchSz_);
+    obj[jss::node_reads_duration_us] = std::to_string(fetchDurationUs_);
+
+    if (auto c = getCounters())
+    {
+        obj[jss::node_read_errors] = std::to_string(c->readErrors);
+        obj[jss::node_read_retries] = std::to_string(c->readRetries);
+        obj[jss::node_write_retries] = std::to_string(c->writeRetries);
+        obj[jss::node_writes_delayed] = std::to_string(c->writesDelayed);
+        obj[jss::node_writes_duration_us] = std::to_string(c->writeDurationUs);
     }
 }
 

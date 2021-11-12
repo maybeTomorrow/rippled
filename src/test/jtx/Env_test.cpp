@@ -25,9 +25,10 @@
 #include <ripple/protocol/Feature.h>
 #include <ripple/protocol/TxFlags.h>
 #include <ripple/protocol/jss.h>
-#include <boost/lexical_cast.hpp>
-#include <boost/optional.hpp>
 #include <test/jtx.h>
+
+#include <boost/lexical_cast.hpp>
+#include <optional>
 #include <utility>
 
 namespace ripple {
@@ -480,20 +481,15 @@ public:
     {
         using namespace jtx;
         // create syntax
-        ticket::create("alice", "bob");
-        ticket::create("alice", 60);
-        ticket::create("alice", "bob", 60);
-        ticket::create("alice", 60, "bob");
+        ticket::create("alice", 1);
 
         {
-            Env env(*this, supported_amendments().set(featureTickets));
+            Env env(*this);
             env.fund(XRP(10000), "alice");
             env(noop("alice"),
                 require(owners("alice", 0), tickets("alice", 0)));
-            env(ticket::create("alice"),
+            env(ticket::create("alice", 1),
                 require(owners("alice", 1), tickets("alice", 1)));
-            env(ticket::create("alice"),
-                require(owners("alice", 2), tickets("alice", 2)));
         }
     }
 
@@ -770,13 +766,13 @@ public:
         // the supported amendments list and tests that it can be
         // enabled explicitly
 
-        auto const neverSupportedFeat = [&]() -> boost::optional<uint256> {
+        auto const neverSupportedFeat = [&]() -> std::optional<uint256> {
             auto const n = supported.size();
             for (size_t i = 0; i < n; ++i)
                 if (!supported[i])
                     return bitsetIndexToFeature(i);
 
-            return boost::none;
+            return std::nullopt;
         }();
 
         if (!neverSupportedFeat)
@@ -816,6 +812,7 @@ public:
 
         auto const missingSomeFeatures =
             supported_amendments() - featureMultiSignReserve - featureFlow;
+        BEAST_EXPECT(missingSomeFeatures.count() == (supported.count() - 2));
         {
             // a Env supported_features_except is missing *only* those features
             Env env{*this, missingSomeFeatures};

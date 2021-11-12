@@ -22,12 +22,13 @@
 #include <ripple/app/paths/Pathfinder.h>
 #include <ripple/app/paths/RippleCalc.h>
 #include <ripple/app/paths/RippleLineCache.h>
-#include <ripple/app/paths/Tuning.h>
+#include <ripple/app/paths/impl/PathfinderUtils.h>
 #include <ripple/basics/Log.h>
 #include <ripple/core/Config.h>
 #include <ripple/core/JobQueue.h>
 #include <ripple/json/to_string.h>
 #include <ripple/ledger/PaymentSandbox.h>
+
 #include <tuple>
 
 /*
@@ -65,6 +66,10 @@ same path request (particularly if the search depth may change).
 namespace ripple {
 
 namespace {
+
+// This is an arbitrary cutoff, and it might cause us to miss other
+// good paths with this arbitrary cut off.
+constexpr std::size_t PATHFINDER_MAX_COMPLETE_PATHS = 1000;
 
 struct AccountCandidate
 {
@@ -143,6 +148,13 @@ pathTypeToString(Pathfinder::PathType const& type)
     return ret;
 }
 
+// Return the smallest amount of useful liquidity for a given amount, and the
+// total number of paths we have to evaluate.
+STAmount
+smallestUsefulAmount(STAmount const& amount, int maxPaths)
+{
+    return divide(amount, STAmount(maxPaths + 2), amount.issue());
+}
 }  // namespace
 
 Pathfinder::Pathfinder(
@@ -150,9 +162,9 @@ Pathfinder::Pathfinder(
     AccountID const& uSrcAccount,
     AccountID const& uDstAccount,
     Currency const& uSrcCurrency,
-    boost::optional<AccountID> const& uSrcIssuer,
+    std::optional<AccountID> const& uSrcIssuer,
     STAmount const& saDstAmount,
-    boost::optional<STAmount> const& srcAmount,
+    std::optional<STAmount> const& srcAmount,
     Application& app)
     : mSrcAccount(uSrcAccount)
     , mDstAccount(uDstAccount)
@@ -169,18 +181,13 @@ Pathfinder::Pathfinder(
           1u,
           0,
           true)))
-    , convert_all_(
-          mDstAmount ==
-          STAmount(
-              mDstAmount.issue(),
-              STAmount::cMaxValue,
-              STAmount::cMaxOffset))
+    , convert_all_(convertAllCheck(mDstAmount))
     , mLedger(cache->getLedger())
     , mRLCache(cache)
     , app_(app)
     , j_(app.journal("Pathfinder"))
 {
-    assert(!uSrcIssuer || isXRP(uSrcCurrency) == isXRP(uSrcIssuer.get()));
+    assert(!uSrcIssuer || isXRP(uSrcCurrency) == isXRP(uSrcIssuer.value()));
 }
 
 bool
@@ -314,8 +321,6 @@ Pathfinder::findPaths(int searchLevel)
         {
             addPathsForType(costedPath.type);
 
-            // TODO(tom): we might be missing other good paths with this
-            // arbitrary cut off.
             if (mCompletePaths.size() > PATHFINDER_MAX_COMPLETE_PATHS)
                 break;
         }
@@ -395,25 +400,10 @@ Pathfinder::getPathLiquidity(
     }
 }
 
-namespace {
-
-// Return the smallest amount of useful liquidity for a given amount, and the
-// total number of paths we have to evaluate.
-STAmount
-smallestUsefulAmount(STAmount const& amount, int maxPaths)
-{
-    return divide(amount, STAmount(maxPaths + 2), amount.issue());
-}
-
-}  // namespace
-
 void
 Pathfinder::computePathRanks(int maxPaths)
 {
-    mRemainingAmount = convert_all_
-        ? STAmount(
-              mDstAmount.issue(), STAmount::cMaxValue, STAmount::cMaxOffset)
-        : mDstAmount;
+    mRemainingAmount = convertAmount(mDstAmount, convert_all_);
 
     // Must subtract liquidity in default path from remaining amount.
     try
@@ -455,8 +445,7 @@ Pathfinder::computePathRanks(int maxPaths)
 static bool
 isDefaultPath(STPath const& path)
 {
-    // TODO(tom): default paths can consist of more than just an account:
-    // https://forum.ripple.com/viewtopic.php?f=2&t=8206&start=10#p57713
+    // FIXME: default paths can consist of more than just an account:
     //
     // JoelKatz writes:
     // So the test for whether a path is a default path is incorrect. I'm not
@@ -496,19 +485,17 @@ Pathfinder::rankPaths(
     rankedPaths.clear();
     rankedPaths.reserve(paths.size());
 
-    STAmount saMinDstAmount;
-    if (convert_all_)
-    {
+    auto const saMinDstAmount = [&]() -> STAmount {
+        if (!convert_all_)
+        {
+            // Ignore paths that move only very small amounts.
+            return smallestUsefulAmount(mDstAmount, maxPaths);
+        }
+
         // On convert_all_ partialPaymentAllowed will be set to true
         // and requiring a huge amount will find the highest liquidity.
-        saMinDstAmount = STAmount(
-            mDstAmount.issue(), STAmount::cMaxValue, STAmount::cMaxOffset);
-    }
-    else
-    {
-        // Ignore paths that move only very small amounts.
-        saMinDstAmount = smallestUsefulAmount(mDstAmount, maxPaths);
-    }
+        return largestAmount(mDstAmount);
+    }();
 
     for (int i = 0; i < paths.size(); ++i)
     {

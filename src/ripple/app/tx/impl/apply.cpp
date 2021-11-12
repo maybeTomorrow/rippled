@@ -55,10 +55,10 @@ checkValidity(
             : STTx::RequireFullyCanonicalSig::no;
 
         auto const sigVerify = tx.checkSign(requireCanonicalSig);
-        if (!sigVerify.first)
+        if (!sigVerify)
         {
             router.setFlags(id, SF_SIGBAD);
-            return {Validity::SigBad, sigVerify.second};
+            return {Validity::SigBad, sigVerify.error()};
         }
         router.setFlags(id, SF_SIGGOOD);
     }
@@ -113,6 +113,8 @@ apply(
     ApplyFlags flags,
     beast::Journal j)
 {
+    STAmountSO stAmountSO{view.rules().enabled(fixSTAmountCanonicalize)};
+
     auto pfresult = preflight(app, view.rules(), tx, flags, j);
     auto pcresult = preclaim(pfresult, app, view);
     return doApply(pcresult, app, view);

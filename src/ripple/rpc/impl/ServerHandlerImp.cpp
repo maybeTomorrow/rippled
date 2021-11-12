@@ -45,10 +45,9 @@
 #include <boost/algorithm/string.hpp>
 #include <boost/beast/http/fields.hpp>
 #include <boost/beast/http/string_body.hpp>
-#include <boost/optional.hpp>
-#include <boost/regex.hpp>
 #include <boost/type_traits.hpp>
 #include <algorithm>
+#include <mutex>
 #include <stdexcept>
 #include <boost/asio.hpp>
 #include <boost/thread/thread.hpp>
@@ -209,14 +208,12 @@ authorized(Port const& port, std::map<std::string, std::string> const& h)
 
 ServerHandlerImp::ServerHandlerImp(
     Application& app,
-    Stoppable& parent,
     boost::asio::io_service& io_service,
     JobQueue& jobQueue,
     NetworkOPs& networkOPs,
     Resource::Manager& resourceManager,
     CollectorManager& cm)
-    : Stoppable("ServerHandler", parent)
-    , app_(app)
+    : app_(app)
     , m_resourceManager(resourceManager)
     , m_journal(app_.journal("Server"))
     , m_networkOPs(networkOPs)
@@ -244,9 +241,13 @@ ServerHandlerImp::setup(Setup const& setup, beast::Journal journal)
 //------------------------------------------------------------------------------
 
 void
-ServerHandlerImp::onStop()
+ServerHandlerImp::stop()
 {
     m_server->close();
+    {
+        std::unique_lock lock(mutex_);
+        condition_.wait(lock, [this] { return stopped_; });
+    }
 }
 
 //------------------------------------------------------------------------------
@@ -256,14 +257,17 @@ ServerHandlerImp::onAccept(
     Session& session,
     boost::asio::ip::tcp::endpoint endpoint)
 {
-    std::lock_guard lock(countlock_);
+    auto const& port = session.port();
 
-    auto const c = ++count_[session.port()];
+    auto const c = [this, &port]() {
+        std::lock_guard lock(mutex_);
+        return ++count_[port];
+    }();
 
-    if (session.port().limit && c >= session.port().limit)
+    if (port.limit && c >= port.limit)
     {
         JLOG(m_journal.trace())
-            << session.port().name << " is full; dropping " << endpoint;
+            << port.name << " is full; dropping " << endpoint;
         return false;
     }
 
@@ -365,7 +369,9 @@ buffers_to_string(ConstBufferSequence const& bs)
     using boost::asio::buffer_size;
     std::string s;
     s.reserve(buffer_size(bs));
-    for (auto const& b : bs)
+    // Use auto&& so the right thing happens whether bs returns a copy or
+    // a reference
+    for (auto&& b : bs)
         s.append(buffer_cast<char const*>(b), buffer_size(b));
     return s;
 }
@@ -464,14 +470,16 @@ ServerHandlerImp::onWSMessage(
 void
 ServerHandlerImp::onClose(Session& session, boost::system::error_code const&)
 {
-    std::lock_guard lock(countlock_);
+    std::lock_guard lock(mutex_);
     --count_[session.port()];
 }
 
 void
 ServerHandlerImp::onStopped(Server&)
 {
-    stopped();
+    std::lock_guard lock(mutex_);
+    stopped_ = true;
+    condition_.notify_one();
 }
 
 //------------------------------------------------------------------------------
@@ -502,8 +510,9 @@ ServerHandlerImp::processSession(
     Resource::Charge loadType = Resource::feeReferenceRPC;
     try
     {
-        auto apiVersion = RPC::getAPIVersionNumber(jv);
-        if (apiVersion == RPC::APIInvalidVersion ||
+        auto apiVersion =
+            RPC::getAPIVersionNumber(jv, app_.config().BETA_RPC_API);
+        if (apiVersion == RPC::apiInvalidVersion ||
             (!jv.isMember(jss::command) && !jv.isMember(jss::method)) ||
             (jv.isMember(jss::command) && !jv[jss::command].isString()) ||
             (jv.isMember(jss::method) && !jv[jss::method].isString()) ||
@@ -512,7 +521,7 @@ ServerHandlerImp::processSession(
         {
             jr[jss::type] = jss::response;
             jr[jss::status] = jss::error;
-            jr[jss::error] = apiVersion == RPC::APIInvalidVersion
+            jr[jss::error] = apiVersion == RPC::apiInvalidVersion
                 ? jss::invalid_API_version
                 : jss::missingCommand;
             jr[jss::request] = jv;
@@ -532,6 +541,7 @@ ServerHandlerImp::processSession(
 
         auto required = RPC::roleRequired(
             apiVersion,
+            app_.config().BETA_RPC_API,
             jv.isMember(jss::command) ? jv[jss::command].asString()
                                       : jv[jss::method].asString());
         auto role = requestRole(
@@ -606,6 +616,9 @@ ServerHandlerImp::processSession(
     }
     else
     {
+        if (jr[jss::result].isMember("forwarded") &&
+            jr[jss::result]["forwarded"])
+            jr = jr[jss::result];
         jr[jss::status] = jss::success;
     }
 
@@ -755,22 +768,24 @@ ServerHandlerImp::processRequest(
             continue;
         }
 
-        auto apiVersion = RPC::APIVersionIfUnspecified;
+        auto apiVersion = RPC::apiVersionIfUnspecified;
         if (jsonRPC.isMember(jss::params) && jsonRPC[jss::params].isArray() &&
             jsonRPC[jss::params].size() > 0 &&
             jsonRPC[jss::params][0u].isObject())
         {
-            apiVersion =
-                RPC::getAPIVersionNumber(jsonRPC[jss::params][Json::UInt(0)]);
+            apiVersion = RPC::getAPIVersionNumber(
+                jsonRPC[jss::params][Json::UInt(0)],
+                app_.config().BETA_RPC_API);
         }
 
-        if (apiVersion == RPC::APIVersionIfUnspecified && batch)
+        if (apiVersion == RPC::apiVersionIfUnspecified && batch)
         {
             // for batch request, api_version may be at a different level
-            apiVersion = RPC::getAPIVersionNumber(jsonRPC);
+            apiVersion =
+                RPC::getAPIVersionNumber(jsonRPC, app_.config().BETA_RPC_API);
         }
 
-        if (apiVersion == RPC::APIInvalidVersion)
+        if (apiVersion == RPC::apiInvalidVersion)
         {
             if (!batch)
             {
@@ -789,8 +804,10 @@ ServerHandlerImp::processRequest(
         auto role = Role::FORBID;
         auto required = Role::FORBID;
         if (jsonRPC.isMember(jss::method) && jsonRPC[jss::method].isString())
-            required =
-                RPC::roleRequired(apiVersion, jsonRPC[jss::method].asString());
+            required = RPC::roleRequired(
+                apiVersion,
+                app_.config().BETA_RPC_API,
+                jsonRPC[jss::method].asString());
 
         if (jsonRPC.isMember(jss::params) && jsonRPC[jss::params].isArray() &&
             jsonRPC[jss::params].size() > 0 &&
@@ -1049,6 +1066,17 @@ ServerHandlerImp::processRequest(
             reply.append(std::move(r));
         else
             reply = std::move(r);
+
+        if (reply.isMember(jss::result) &&
+            reply[jss::result].isMember(jss::result))
+        {
+            reply = reply[jss::result];
+            if (reply.isMember(jss::status))
+            {
+                reply[jss::result][jss::status] = reply[jss::status];
+                reply.removeMember(jss::status);
+            }
+        }
     }
     auto response = to_string(reply);
 
@@ -1302,7 +1330,6 @@ setup_ServerHandler(Config const& config, std::ostream&& log)
 std::unique_ptr<ServerHandler>
 make_ServerHandler(
     Application& app,
-    Stoppable& parent,
     boost::asio::io_service& io_service,
     JobQueue& jobQueue,
     NetworkOPs& networkOPs,
@@ -1310,7 +1337,7 @@ make_ServerHandler(
     CollectorManager& cm)
 {
     return std::make_unique<ServerHandlerImp>(
-        app, parent, io_service, jobQueue, networkOPs, resourceManager, cm);
+        app, io_service, jobQueue, networkOPs, resourceManager, cm);
 }
 
 }  // namespace ripple

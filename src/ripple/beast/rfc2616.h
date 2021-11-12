@@ -29,7 +29,6 @@
 #include <cctype>
 #include <iterator>
 #include <string>
-#include <tuple>  // for std::tie, remove ASAP
 #include <utility>
 #include <vector>
 
@@ -37,12 +36,6 @@ namespace beast {
 namespace rfc2616 {
 
 namespace detail {
-
-/*  Routines for performing RFC2616 compliance.
-    RFC2616:
-        Hypertext Transfer Protocol -- HTTP/1.1
-        http://www.w3.org/Protocols/rfc2616/rfc2616
-*/
 
 struct ci_equal_pred
 {
@@ -56,8 +49,6 @@ struct ci_equal_pred
             std::tolower(static_cast<unsigned char>(c2));
     }
 };
-
-}  // namespace detail
 
 /** Returns `true` if `c` is linear white space.
 
@@ -86,57 +77,6 @@ is_white(char c)
     return false;
 }
 
-/** Returns `true` if `c` is a control character. */
-inline bool
-is_control(char c)
-{
-    return c <= 31 || c >= 127;
-}
-
-/** Returns `true` if `c` is a separator. */
-inline bool
-is_separator(char c)
-{
-    // VFALCO Could use a static table
-    switch (c)
-    {
-        case '(':
-        case ')':
-        case '<':
-        case '>':
-        case '@':
-        case ',':
-        case ';':
-        case ':':
-        case '\\':
-        case '"':
-        case '{':
-        case '}':
-        case ' ':
-        case '\t':
-            return true;
-    };
-    return false;
-}
-
-/** Returns `true` if `c` is a character. */
-inline bool
-is_char(char c)
-{
-#ifdef __CHAR_UNSIGNED__ /* -funsigned-char */
-    return c >= 0 && c <= 127;
-#else
-    return c >= 0;
-#endif
-}
-
-template <class FwdIter>
-FwdIter
-trim_left(FwdIter first, FwdIter last)
-{
-    return std::find_if_not(first, last, is_white);
-}
-
 template <class FwdIter>
 FwdIter
 trim_right(FwdIter first, FwdIter last)
@@ -152,34 +92,6 @@ trim_right(FwdIter first, FwdIter last)
     return first;
 }
 
-template <class CharT, class Traits, class Allocator>
-void
-trim_right_in_place(std::basic_string<CharT, Traits, Allocator>& s)
-{
-    s.resize(std::distance(s.begin(), trim_right(s.begin(), s.end())));
-}
-
-template <class FwdIter>
-std::pair<FwdIter, FwdIter>
-trim(FwdIter first, FwdIter last)
-{
-    first = trim_left(first, last);
-    last = trim_right(first, last);
-    return std::make_pair(first, last);
-}
-
-template <class String>
-String
-trim(String const& s)
-{
-    using std::begin;
-    using std::end;
-    auto first = begin(s);
-    auto last = end(s);
-    std::tie(first, last) = trim(first, last);
-    return {first, last};
-}
-
 template <class String>
 String
 trim_right(String const& s)
@@ -192,11 +104,7 @@ trim_right(String const& s)
     return {first, last};
 }
 
-inline std::string
-trim(std::string const& s)
-{
-    return trim<std::string>(s);
-}
+}  // namespace detail
 
 /** Parse a character sequence of values separated by commas.
     Double quotes and escape sequences will be converted.  Excess white
@@ -214,8 +122,11 @@ template <
 Result
 split(FwdIt first, FwdIt last, Char delim)
 {
-    Result result;
+    using namespace detail;
     using string = typename Result::value_type;
+
+    Result result;
+
     FwdIt iter = first;
     string e;
     while (iter != last)
@@ -378,6 +289,7 @@ template <class>
 void
 list_iterator::increment()
 {
+    using namespace detail;
     value_.clear();
     while (it_ != end_)
     {
@@ -436,7 +348,6 @@ list_iterator::increment()
         }
     }
 }
-
 /** Returns true if two strings are equal.
 
     A case-insensitive comparison is used.

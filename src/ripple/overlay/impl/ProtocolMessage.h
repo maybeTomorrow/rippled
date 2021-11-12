@@ -31,10 +31,30 @@
 #include <cassert>
 #include <cstdint>
 #include <memory>
+#include <optional>
+#include <ripple.pb.h>
 #include <type_traits>
 #include <vector>
 
 namespace ripple {
+
+inline protocol::MessageType
+protocolMessageType(protocol::TMGetLedger const&)
+{
+    return protocol::mtGET_LEDGER;
+}
+
+inline protocol::MessageType
+protocolMessageType(protocol::TMReplayDeltaRequest const&)
+{
+    return protocol::mtREPLAY_DELTA_REQ;
+}
+
+inline protocol::MessageType
+protocolMessageType(protocol::TMProofPathRequest const&)
+{
+    return protocol::mtPROOF_PATH_REQ;
+}
 
 /** Returns the name of a protocol message given its type. */
 template <class = void>
@@ -49,14 +69,6 @@ protocolMessageName(int type)
             return "ping";
         case protocol::mtCLUSTER:
             return "cluster";
-        case protocol::mtGET_SHARD_INFO:
-            return "get_shard_info";
-        case protocol::mtSHARD_INFO:
-            return "shard_info";
-        case protocol::mtGET_PEER_SHARD_INFO:
-            return "get_peer_shard_info";
-        case protocol::mtPEER_SHARD_INFO:
-            return "peer_shard_info";
         case protocol::mtENDPOINTS:
             return "endpoints";
         case protocol::mtTRANSACTION:
@@ -73,10 +85,34 @@ protocolMessageName(int type)
             return "have_set";
         case protocol::mtVALIDATORLIST:
             return "validator_list";
+        case protocol::mtVALIDATORLISTCOLLECTION:
+            return "validator_list_collection";
         case protocol::mtVALIDATION:
             return "validation";
+        case protocol::mtGET_PEER_SHARD_INFO:
+            return "get_peer_shard_info";
+        case protocol::mtPEER_SHARD_INFO:
+            return "peer_shard_info";
         case protocol::mtGET_OBJECTS:
             return "get_objects";
+        case protocol::mtHAVE_TRANSACTIONS:
+            return "have_transactions";
+        case protocol::mtTRANSACTIONS:
+            return "transactions";
+        case protocol::mtSQUELCH:
+            return "squelch";
+        case protocol::mtPROOF_PATH_REQ:
+            return "proof_path_request";
+        case protocol::mtPROOF_PATH_RESPONSE:
+            return "proof_path_response";
+        case protocol::mtREPLAY_DELTA_REQ:
+            return "replay_delta_request";
+        case protocol::mtREPLAY_DELTA_RESPONSE:
+            return "replay_delta_response";
+        case protocol::mtGET_PEER_SHARD_INFO_V2:
+            return "get_peer_shard_info_v2";
+        case protocol::mtPEER_SHARD_INFO_V2:
+            return "peer_shard_info_v2";
         default:
             break;
     }
@@ -120,15 +156,25 @@ buffersBegin(BufferSequence const& bufs)
         bufs);
 }
 
+template <typename BufferSequence>
+auto
+buffersEnd(BufferSequence const& bufs)
+{
+    return boost::asio::buffers_iterator<BufferSequence, std::uint8_t>::end(
+        bufs);
+}
+
 /** Parse a message header
  * @return a seated optional if the message header was successfully
  *         parsed. An unseated optional otherwise, in which case
  *         @param ec contains more information:
  *         - set to `errc::success` if not enough bytes were present
  *         - set to `errc::no_message` if a valid header was not present
+ *         @bufs - sequence of input buffers, can't be empty
+ *         @size input data size
  */
 template <class BufferSequence>
-boost::optional<MessageHeader>
+std::optional<MessageHeader>
 parseMessageHeader(
     boost::system::error_code& ec,
     BufferSequence const& bufs,
@@ -138,8 +184,13 @@ parseMessageHeader(
 
     MessageHeader hdr;
     auto iter = buffersBegin(bufs);
+    assert(iter != buffersEnd(bufs));
 
-    // Check valid header
+    // Check valid header compressed message:
+    // - 4 bits are the compression algorithm, 1st bit is always set to 1
+    // - 2 bits are always set to 0
+    // - 26 bits are the payload size
+    // - 32 bits are the uncompressed data size
     if (*iter & 0x80)
     {
         hdr.header_size = headerBytesCompressed;
@@ -148,21 +199,21 @@ parseMessageHeader(
         if (size < hdr.header_size)
         {
             ec = make_error_code(boost::system::errc::success);
-            return boost::none;
+            return std::nullopt;
         }
 
         if (*iter & 0x0C)
         {
             ec = make_error_code(boost::system::errc::protocol_error);
-            return boost::none;
+            return std::nullopt;
         }
 
-        hdr.algorithm = static_cast<compression::Algorithm>(*iter);
+        hdr.algorithm = static_cast<compression::Algorithm>(*iter & 0xF0);
 
         if (hdr.algorithm != compression::Algorithm::LZ4)
         {
             ec = make_error_code(boost::system::errc::protocol_error);
-            return boost::none;
+            return std::nullopt;
         }
 
         for (int i = 0; i != 4; ++i)
@@ -182,6 +233,9 @@ parseMessageHeader(
         return hdr;
     }
 
+    // Check valid header uncompressed message:
+    // - 6 bits are set to 0
+    // - 26 bits are the payload size
     if ((*iter & 0xFC) == 0)
     {
         hdr.header_size = headerBytes;
@@ -189,7 +243,7 @@ parseMessageHeader(
         if (size < hdr.header_size)
         {
             ec = make_error_code(boost::system::errc::success);
-            return boost::none;
+            return std::nullopt;
         }
 
         hdr.algorithm = Algorithm::None;
@@ -207,17 +261,16 @@ parseMessageHeader(
     }
 
     ec = make_error_code(boost::system::errc::no_message);
-    return boost::none;
+    return std::nullopt;
 }
 
 template <
     class T,
     class Buffers,
-    class Handler,
     class = std::enable_if_t<
         std::is_base_of<::google::protobuf::Message, T>::value>>
-bool
-invoke(MessageHeader const& header, Buffers const& buffers, Handler& handler)
+std::shared_ptr<T>
+parseMessageContent(MessageHeader const& header, Buffers const& buffers)
 {
     auto const m = std::make_shared<T>();
 
@@ -237,12 +290,34 @@ invoke(MessageHeader const& header, Buffers const& buffers, Handler& handler)
             header.algorithm);
 
         if (payloadSize == 0 || !m->ParseFromArray(payload.data(), payloadSize))
-            return false;
+            return {};
     }
     else if (!m->ParseFromZeroCopyStream(&stream))
+        return {};
+
+    return m;
+}
+
+template <
+    class T,
+    class Buffers,
+    class Handler,
+    class = std::enable_if_t<
+        std::is_base_of<::google::protobuf::Message, T>::value>>
+bool
+invoke(MessageHeader const& header, Buffers const& buffers, Handler& handler)
+{
+    auto const m = parseMessageContent<T>(header, buffers);
+    if (!m)
         return false;
 
-    handler.onMessageBegin(header.message_type, m, header.payload_wire_size);
+    using namespace ripple::compression;
+    handler.onMessageBegin(
+        header.message_type,
+        m,
+        header.payload_wire_size,
+        header.uncompressed_size,
+        header.algorithm != Algorithm::None);
     handler.onMessage(m);
     handler.onMessageEnd(header.message_type, m);
 
@@ -256,11 +331,19 @@ invoke(MessageHeader const& header, Buffers const& buffers, Handler& handler)
     If there is insufficient data to produce a complete protocol
     message, zero is returned for the number of bytes consumed.
 
+    @param buffers The buffer that contains the data we've received
+    @param handler The handler that will be used to process the message
+    @param hint If possible, a hint as to the amount of data to read next. The
+                returned value MAY be zero, which means "no hint"
+
     @return The number of bytes consumed, or the error code if any.
 */
 template <class Buffers, class Handler>
 std::pair<std::size_t, boost::system::error_code>
-invokeProtocolMessage(Buffers const& buffers, Handler& handler)
+invokeProtocolMessage(
+    Buffers const& buffers,
+    Handler& handler,
+    std::size_t& hint)
 {
     std::pair<std::size_t, boost::system::error_code> result = {0, {}};
 
@@ -283,8 +366,8 @@ invokeProtocolMessage(Buffers const& buffers, Handler& handler)
     // whose size exceeds this may result in the connection being dropped. A
     // larger message size may be supported in the future or negotiated as
     // part of a protocol upgrade.
-    if (header->payload_wire_size > megabytes(64) ||
-        header->uncompressed_size > megabytes(64))
+    if (header->payload_wire_size > maximiumMessageSize ||
+        header->uncompressed_size > maximiumMessageSize)
     {
         result.second = make_error_code(boost::system::errc::message_size);
         return result;
@@ -301,7 +384,10 @@ invokeProtocolMessage(Buffers const& buffers, Handler& handler)
     // We don't have the whole message yet. This isn't an error but we have
     // nothing to do.
     if (header->total_wire_size > size)
+    {
+        hint = header->total_wire_size - size;
         return result;
+    }
 
     bool success;
 
@@ -318,22 +404,6 @@ invokeProtocolMessage(Buffers const& buffers, Handler& handler)
         case protocol::mtCLUSTER:
             success =
                 detail::invoke<protocol::TMCluster>(*header, buffers, handler);
-            break;
-        case protocol::mtGET_SHARD_INFO:
-            success = detail::invoke<protocol::TMGetShardInfo>(
-                *header, buffers, handler);
-            break;
-        case protocol::mtSHARD_INFO:
-            success = detail::invoke<protocol::TMShardInfo>(
-                *header, buffers, handler);
-            break;
-        case protocol::mtGET_PEER_SHARD_INFO:
-            success = detail::invoke<protocol::TMGetPeerShardInfo>(
-                *header, buffers, handler);
-            break;
-        case protocol::mtPEER_SHARD_INFO:
-            success = detail::invoke<protocol::TMPeerShardInfo>(
-                *header, buffers, handler);
             break;
         case protocol::mtENDPOINTS:
             success = detail::invoke<protocol::TMEndpoints>(
@@ -367,12 +437,60 @@ invokeProtocolMessage(Buffers const& buffers, Handler& handler)
             success = detail::invoke<protocol::TMValidation>(
                 *header, buffers, handler);
             break;
+        case protocol::mtGET_PEER_SHARD_INFO:
+            success = detail::invoke<protocol::TMGetPeerShardInfo>(
+                *header, buffers, handler);
+            break;
+        case protocol::mtPEER_SHARD_INFO:
+            success = detail::invoke<protocol::TMPeerShardInfo>(
+                *header, buffers, handler);
+            break;
         case protocol::mtVALIDATORLIST:
             success = detail::invoke<protocol::TMValidatorList>(
                 *header, buffers, handler);
             break;
+        case protocol::mtVALIDATORLISTCOLLECTION:
+            success = detail::invoke<protocol::TMValidatorListCollection>(
+                *header, buffers, handler);
+            break;
         case protocol::mtGET_OBJECTS:
             success = detail::invoke<protocol::TMGetObjectByHash>(
+                *header, buffers, handler);
+            break;
+        case protocol::mtHAVE_TRANSACTIONS:
+            success = detail::invoke<protocol::TMHaveTransactions>(
+                *header, buffers, handler);
+            break;
+        case protocol::mtTRANSACTIONS:
+            success = detail::invoke<protocol::TMTransactions>(
+                *header, buffers, handler);
+            break;
+        case protocol::mtSQUELCH:
+            success =
+                detail::invoke<protocol::TMSquelch>(*header, buffers, handler);
+            break;
+        case protocol::mtPROOF_PATH_REQ:
+            success = detail::invoke<protocol::TMProofPathRequest>(
+                *header, buffers, handler);
+            break;
+        case protocol::mtPROOF_PATH_RESPONSE:
+            success = detail::invoke<protocol::TMProofPathResponse>(
+                *header, buffers, handler);
+            break;
+        case protocol::mtREPLAY_DELTA_REQ:
+            success = detail::invoke<protocol::TMReplayDeltaRequest>(
+                *header, buffers, handler);
+            break;
+        case protocol::mtREPLAY_DELTA_RESPONSE:
+            success = detail::invoke<protocol::TMReplayDeltaResponse>(
+                *header, buffers, handler);
+            break;
+        case protocol::mtGET_PEER_SHARD_INFO_V2:
+            success = detail::invoke<protocol::TMGetPeerShardInfoV2>(
+                *header, buffers, handler);
+            break;
+        case protocol::mtPEER_SHARD_INFO_V2:
+            success = detail::invoke<protocol::TMPeerShardInfoV2>(
                 *header, buffers, handler);
             break;
         default:

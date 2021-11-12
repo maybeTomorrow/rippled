@@ -29,12 +29,13 @@
 #include <ripple/ledger/detail/ReadViewFwdRange.h>
 #include <ripple/protocol/Indexes.h>
 #include <ripple/protocol/Protocol.h>
+#include <ripple/protocol/STAmount.h>
 #include <ripple/protocol/STLedgerEntry.h>
 #include <ripple/protocol/STTx.h>
-#include <boost/optional.hpp>
 #include <cassert>
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <unordered_set>
 
 namespace ripple {
@@ -67,10 +68,13 @@ struct Fees
         return reserve + ownerCount * increment;
     }
 
-    std::pair<bool, XRPAmount>
+    XRPAmount
     toDrops(FeeUnit64 const& fee) const
     {
-        return mulDiv(base, fee, units);
+        if (auto const resultPair = mulDiv(base, fee, units); resultPair.first)
+            return resultPair.second;
+
+        return XRPAmount(STAmount::cMaxNativeN);
     }
 };
 
@@ -200,7 +204,7 @@ public:
         explicit sles_type(ReadView const& view);
         iterator
         begin() const;
-        iterator const&
+        iterator
         end() const;
         iterator
         upper_bound(key_type const& key) const;
@@ -213,7 +217,7 @@ public:
         empty() const;
         iterator
         begin() const;
-        iterator const&
+        iterator
         end() const;
     };
 
@@ -280,16 +284,16 @@ public:
 
         This returns the key of the first state item
         whose key is greater than the specified key. If
-        no such key is present, boost::none is returned.
+        no such key is present, std::nullopt is returned.
 
-        If `last` is engaged, returns boost::none when
+        If `last` is engaged, returns std::nullopt when
         the key returned would be outside the open
         interval (key, last).
     */
-    virtual boost::optional<key_type>
+    virtual std::optional<key_type>
     succ(
         key_type const& key,
-        boost::optional<key_type> const& last = boost::none) const = 0;
+        std::optional<key_type> const& last = std::nullopt) const = 0;
 
     /** Return the state item associated with a key.
 
@@ -399,9 +403,9 @@ public:
 
     /** Return the digest associated with the key.
 
-        @return boost::none if the item does not exist.
+        @return std::nullopt if the item does not exist.
     */
-    virtual boost::optional<digest_type>
+    virtual std::optional<digest_type>
     digest(key_type const& key) const = 0;
 };
 
@@ -417,7 +421,7 @@ getCloseAgree(LedgerInfo const& info)
 }
 
 void
-addRaw(LedgerInfo const&, Serializer&);
+addRaw(LedgerInfo const&, Serializer&, bool includeHash = false);
 
 }  // namespace ripple
 

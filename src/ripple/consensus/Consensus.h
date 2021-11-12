@@ -30,6 +30,7 @@
 #include <ripple/consensus/LedgerTiming.h>
 #include <ripple/json/json_writer.h>
 #include <boost/logic/tribool.hpp>
+#include <optional>
 #include <sstream>
 
 namespace ripple {
@@ -214,10 +215,10 @@ checkConsensus(
       //-----------------------------------------------------------------------
       //
       // Attempt to acquire a specific ledger.
-      boost::optional<Ledger> acquireLedger(Ledger::ID const & ledgerID);
+      std::optional<Ledger> acquireLedger(Ledger::ID const & ledgerID);
 
       // Acquire the transaction set associated with a proposed position.
-      boost::optional<TxSet> acquireTxSet(TxSet::ID const & setID);
+      std::optional<TxSet> acquireTxSet(TxSet::ID const & setID);
 
       // Whether any transactions are in the open ledger
       bool hasOpenTransactions() const;
@@ -398,7 +399,7 @@ public:
     void
     simulate(
         NetClock::time_point const& now,
-        boost::optional<std::chrono::milliseconds> consensusDelay);
+        std::optional<std::chrono::milliseconds> consensusDelay);
 
     /** Get the previous ledger ID.
 
@@ -577,7 +578,7 @@ private:
     // Transaction Sets, indexed by hash of transaction tree
     hash_map<typename TxSet_t::ID, const TxSet_t> acquired_;
 
-    boost::optional<Result> result_;
+    std::optional<Result> result_;
     ConsensusCloseTimes rawCloseTimes_;
 
     //-------------------------------------------------------------------------
@@ -699,7 +700,7 @@ Consensus<Adaptor>::peerProposal(
     NetClock::time_point const& now,
     PeerPosition_t const& newPeerPos)
 {
-    NodeID_t const& peerID = newPeerPos.proposal().nodeID();
+    auto const& peerID = newPeerPos.proposal().nodeID();
 
     // Always need to store recent positions
     {
@@ -725,9 +726,7 @@ Consensus<Adaptor>::peerProposalInternal(
 
     now_ = now;
 
-    Proposal_t const& newPeerProp = newPeerPos.proposal();
-
-    NodeID_t const& peerID = newPeerProp.nodeID();
+    auto const& newPeerProp = newPeerPos.proposal();
 
     if (newPeerProp.prevLedger() != prevLedgerID_)
     {
@@ -736,10 +735,11 @@ Consensus<Adaptor>::peerProposalInternal(
         return false;
     }
 
+    auto const& peerID = newPeerProp.nodeID();
+
     if (deadNodes_.find(peerID) != deadNodes_.end())
     {
-        using std::to_string;
-        JLOG(j_.info()) << "Position from dead node: " << to_string(peerID);
+        JLOG(j_.info()) << "Position from dead node: " << peerID;
         return false;
     }
 
@@ -758,9 +758,7 @@ Consensus<Adaptor>::peerProposalInternal(
 
         if (newPeerProp.isBowOut())
         {
-            using std::to_string;
-
-            JLOG(j_.info()) << "Peer bows out: " << to_string(peerID);
+            JLOG(j_.info()) << "Peer " << peerID << " bows out";
             if (result_)
             {
                 for (auto& it : result_->disputes)
@@ -795,7 +793,7 @@ Consensus<Adaptor>::peerProposalInternal(
         if (ait == acquired_.end())
         {
             // acquireTxSet will return the set if it is available, or
-            // spawn a request for it and return none/nullptr.  It will call
+            // spawn a request for it and return nullopt/nullptr.  It will call
             // gotTxSet once it arrives
             if (auto set = adaptor_.acquireTxSet(newPeerProp.position()))
                 gotTxSet(now_, *set);
@@ -884,7 +882,7 @@ template <class Adaptor>
 void
 Consensus<Adaptor>::simulate(
     NetClock::time_point const& now,
-    boost::optional<std::chrono::milliseconds> consensusDelay)
+    std::optional<std::chrono::milliseconds> consensusDelay)
 {
     using namespace std::chrono_literals;
     JLOG(j_.info()) << "Simulating consensus";
@@ -1391,11 +1389,11 @@ Consensus<Adaptor>::updateOurPositions()
     }
 
     // This will stay unseated unless there are any changes
-    boost::optional<TxSet_t> ourNewSet;
+    std::optional<TxSet_t> ourNewSet;
 
     // Update votes on disputed transactions
     {
-        boost::optional<typename TxSet_t::MutableTxSet> mutableSet;
+        std::optional<typename TxSet_t::MutableTxSet> mutableSet;
         for (auto& [txId, dispute] : result_->disputes)
         {
             // Because the threshold for inclusion increases,
@@ -1559,10 +1557,7 @@ Consensus<Adaptor>::haveConsensus()
         }
         else
         {
-            using std::to_string;
-
-            JLOG(j_.debug()) << to_string(nodeId) << " has "
-                             << to_string(peerProp.position());
+            JLOG(j_.debug()) << nodeId << " has " << peerProp.position();
             ++disagree;
         }
     }

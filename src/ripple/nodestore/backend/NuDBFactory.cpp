@@ -38,10 +38,15 @@ namespace NodeStore {
 class NuDBBackend : public Backend
 {
 public:
-    static constexpr std::size_t currentType = 1;
+    static constexpr std::uint64_t currentType = 1;
+    static constexpr std::uint64_t deterministicMask = 0xFFFFFFFF00000000ull;
+
+    /* "SHRD" in ASCII */
+    static constexpr std::uint64_t deterministicType = 0x5348524400000000ull;
 
     beast::Journal const j_;
     size_t const keyBytes_;
+    std::size_t const burstSize_;
     std::string const name_;
     nudb::store db_;
     std::atomic<bool> deletePath_;
@@ -50,11 +55,13 @@ public:
     NuDBBackend(
         size_t keyBytes,
         Section const& keyValues,
+        std::size_t burstSize,
         Scheduler& scheduler,
         beast::Journal journal)
         : j_(journal)
         , keyBytes_(keyBytes)
-        , name_(get<std::string>(keyValues, "path"))
+        , burstSize_(burstSize)
+        , name_(get(keyValues, "path"))
         , deletePath_(false)
         , scheduler_(scheduler)
     {
@@ -66,12 +73,14 @@ public:
     NuDBBackend(
         size_t keyBytes,
         Section const& keyValues,
+        std::size_t burstSize,
         Scheduler& scheduler,
         nudb::context& context,
         beast::Journal journal)
         : j_(journal)
         , keyBytes_(keyBytes)
-        , name_(get<std::string>(keyValues, "path"))
+        , burstSize_(burstSize)
+        , name_(get(keyValues, "path"))
         , db_(context)
         , deletePath_(false)
         , scheduler_(scheduler)
@@ -93,7 +102,8 @@ public:
     }
 
     void
-    open(bool createIfMissing) override
+    open(bool createIfMissing, uint64_t appType, uint64_t uid, uint64_t salt)
+        override
     {
         using namespace boost::filesystem;
         if (db_.is_open())
@@ -114,8 +124,9 @@ public:
                 dp,
                 kp,
                 lp,
-                currentType,
-                nudb::make_salt(),
+                appType,
+                uid,
+                salt,
                 keyBytes_,
                 nudb::block_size(kp),
                 0.50,
@@ -128,8 +139,31 @@ public:
         db_.open(dp, kp, lp, ec);
         if (ec)
             Throw<nudb::system_error>(ec);
-        if (db_.appnum() != currentType)
+
+        /** Old value currentType is accepted for appnum in traditional
+         *  databases, new value is used for deterministic shard databases.
+         *  New 64-bit value is constructed from fixed and random parts.
+         *  Fixed part is bounded by bitmask deterministicMask,
+         *  and the value of fixed part is deterministicType.
+         *  Random part depends on the contents of the shard and may be any.
+         *  The contents of appnum field should match either old or new rule.
+         */
+        if (db_.appnum() != currentType &&
+            (db_.appnum() & deterministicMask) != deterministicType)
             Throw<std::runtime_error>("nodestore: unknown appnum");
+        db_.set_burst(burstSize_);
+    }
+
+    bool
+    isOpen() override
+    {
+        return db_.is_open();
+    }
+
+    void
+    open(bool createIfMissing) override
+    {
+        open(createIfMissing, currentType, nudb::make_uid(), nudb::make_salt());
     }
 
     void
@@ -176,17 +210,22 @@ public:
         return status;
     }
 
-    bool
-    canFetchBatch() override
+    std::pair<std::vector<std::shared_ptr<NodeObject>>, Status>
+    fetchBatch(std::vector<uint256 const*> const& hashes) override
     {
-        return false;
-    }
+        std::vector<std::shared_ptr<NodeObject>> results;
+        results.reserve(hashes.size());
+        for (auto const& h : hashes)
+        {
+            std::shared_ptr<NodeObject> nObj;
+            Status status = fetch(h->begin(), &nObj);
+            if (status != ok)
+                results.push_back({});
+            else
+                results.push_back(nObj);
+        }
 
-    std::vector<std::shared_ptr<NodeObject>>
-    fetchBatch(std::size_t n, void const* const* keys) override
-    {
-        Throw<std::runtime_error>("pure virtual called");
-        return {};
+        return {results, ok};
     }
 
     void
@@ -225,6 +264,11 @@ public:
         report.elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
             std::chrono::steady_clock::now() - start);
         scheduler_.onBatchWrite(report);
+    }
+
+    void
+    sync() override
+    {
     }
 
     void
@@ -327,23 +371,25 @@ public:
     createInstance(
         size_t keyBytes,
         Section const& keyValues,
+        std::size_t burstSize,
         Scheduler& scheduler,
         beast::Journal journal) override
     {
         return std::make_unique<NuDBBackend>(
-            keyBytes, keyValues, scheduler, journal);
+            keyBytes, keyValues, burstSize, scheduler, journal);
     }
 
     std::unique_ptr<Backend>
     createInstance(
         size_t keyBytes,
         Section const& keyValues,
+        std::size_t burstSize,
         Scheduler& scheduler,
         nudb::context& context,
         beast::Journal journal) override
     {
         return std::make_unique<NuDBBackend>(
-            keyBytes, keyValues, scheduler, context, journal);
+            keyBytes, keyValues, burstSize, scheduler, context, journal);
     }
 };
 

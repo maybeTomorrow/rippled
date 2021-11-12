@@ -21,9 +21,13 @@
 #define RIPPLE_OVERLAY_PEERIMP_H_INCLUDED
 
 #include <ripple/app/consensus/RCLCxPeerPos.h>
+#include <ripple/app/ledger/impl/LedgerReplayMsgHandler.h>
 #include <ripple/basics/Log.h>
 #include <ripple/basics/RangeSet.h>
+#include <ripple/basics/UnorderedContainers.h>
 #include <ripple/beast/utility/WrappedSink.h>
+#include <ripple/nodestore/ShardInfo.h>
+#include <ripple/overlay/Squelch.h>
 #include <ripple/overlay/impl/OverlayImpl.h>
 #include <ripple/overlay/impl/ProtocolMessage.h>
 #include <ripple/overlay/impl/ProtocolVersion.h>
@@ -35,50 +39,23 @@
 
 #include <boost/circular_buffer.hpp>
 #include <boost/endian/conversion.hpp>
-#include <boost/optional.hpp>
+#include <boost/thread/shared_mutex.hpp>
 #include <cstdint>
+#include <optional>
 #include <queue>
-#include <shared_mutex>
 
 namespace ripple {
+
+struct ValidatorBlobInfo;
+class SHAMap;
 
 class PeerImp : public Peer,
                 public std::enable_shared_from_this<PeerImp>,
                 public OverlayImpl::Child
 {
 public:
-    /** Type of connection.
-        This affects how messages are routed.
-    */
-    enum class Type { legacy, leaf, peer };
-
-    /** Current state */
-    enum class State {
-        /** A connection is being established (outbound) */
-        connecting
-
-        /** Connection has been successfully established */
-        ,
-        connected
-
-        /** Handshake has been received from this peer */
-        ,
-        handshaked
-
-        /** Running the Ripple protocol actively */
-        ,
-        active
-    };
-
-    enum class Sanity { insane, unknown, sane };
-
-    struct ShardInfo
-    {
-        beast::IP::Endpoint endpoint;
-        RangeSet<std::uint32_t> shardIndexes;
-    };
-
-    using ptr = std::shared_ptr<PeerImp>;
+    /** Whether the peer's view of the ledger converges or diverges from ours */
+    enum class Tracking { diverged, unknown, converged };
 
 private:
     using clock_type = std::chrono::steady_clock;
@@ -104,8 +81,6 @@ private:
     boost::asio::strand<boost::asio::executor> strand_;
     waitable_timer timer_;
 
-    // Type type_ = Type::legacy;
-
     // Updated at each stage of the connection process to reflect
     // the current conditions as closely as possible.
     beast::IP::Endpoint const remote_address_;
@@ -113,19 +88,18 @@ private:
     // These are up here to prevent warnings about order of initializations
     //
     OverlayImpl& overlay_;
-    bool const m_inbound;
+    bool const inbound_;
 
     // Protocol version to use for this link
     ProtocolVersion protocol_;
 
-    State state_;  // Current state
-    std::atomic<Sanity> sanity_;
-    clock_type::time_point insaneTime_;
+    std::atomic<Tracking> tracking_;
+    clock_type::time_point trackingTime_;
     bool detaching_ = false;
     // Node public key of peer.
     PublicKey const publicKey_;
     std::string name_;
-    std::shared_timed_mutex mutable nameMutex_;
+    boost::shared_mutex mutable nameMutex_;
 
     // The indices of the smallest and largest ledgers this peer has available
     //
@@ -137,10 +111,13 @@ private:
     boost::circular_buffer<uint256> recentLedgers_{128};
     boost::circular_buffer<uint256> recentTxSets_{128};
 
-    boost::optional<std::chrono::milliseconds> latency_;
-    boost::optional<std::uint32_t> lastPingSeq_;
+    std::optional<std::chrono::milliseconds> latency_;
+    std::optional<std::uint32_t> lastPingSeq_;
     clock_type::time_point lastPingTime_;
     clock_type::time_point const creationTime_;
+
+    reduce_relay::Squelch<UptimeClock> squelch_;
+    inline static std::atomic_bool reduceRelayReady_{false};
 
     // Notes on thread locking:
     //
@@ -159,16 +136,13 @@ private:
     // o maxLedger_
     // o recentLedgers_
     // o recentTxSets_
-    // o insaneTime_
+    // o trackingTime_
     // o latency_
     //
     // The following variables are being protected preemptively:
     //
     // o name_
     // o last_status_
-    // o lastPingSeq_
-    // o lastPingTime_
-    // o no_ping_
     //
     // June 2019
 
@@ -181,20 +155,31 @@ private:
     http_request_type request_;
     http_response_type response_;
     boost::beast::http::fields const& headers_;
-    boost::beast::multi_buffer write_buffer_;
     std::queue<std::shared_ptr<Message>> send_queue_;
     bool gracefulClose_ = false;
     int large_sendq_ = 0;
-    int no_ping_ = 0;
     std::unique_ptr<LoadEvent> load_event_;
     // The highest sequence of each PublisherList that has
     // been sent to or received from this peer.
     hash_map<PublicKey, std::size_t> publisherListSequences_;
 
+    // Any known shard info from this peer and its sub peers
+    hash_map<PublicKey, NodeStore::ShardInfo> shardInfos_;
     std::mutex mutable shardInfoMutex_;
-    hash_map<PublicKey, ShardInfo> shardInfo_;
 
     Compressed compressionEnabled_ = Compressed::Off;
+
+    // Queue of transactions' hashes that have not been
+    // relayed. The hashes are sent once a second to a peer
+    // and the peer requests missing transactions from the node.
+    hash_set<uint256> txQueue_;
+    // true if tx reduce-relay feature is enabled on the peer.
+    bool txReduceRelayEnabled_ = false;
+    // true if validation/proposal reduce-relay feature is enabled
+    // on the peer.
+    bool vpReduceRelayEnabled_ = false;
+    bool ledgerReplayEnabled_ = false;
+    LedgerReplayMsgHandler ledgerReplayMsgHandler_;
 
     friend class OverlayImpl;
 
@@ -217,7 +202,7 @@ private:
         total_bytes() const;
 
     private:
-        std::shared_mutex mutable mutex_;
+        boost::shared_mutex mutable mutex_;
         boost::circular_buffer<std::uint64_t> rollingAvg_{30, 0ull};
         clock_type::time_point intervalStart_{clock_type::now()};
         std::uint64_t totalBytes_{0};
@@ -278,7 +263,7 @@ public:
     }
 
     // Work-around for calling shared_from_this in constructors
-    void
+    virtual void
     run();
 
     // Called when Overlay gets a stop request.
@@ -291,6 +276,22 @@ public:
 
     void
     send(std::shared_ptr<Message> const& m) override;
+
+    /** Send aggregated transactions' hashes */
+    void
+    sendTxQueue() override;
+
+    /** Add transaction's hash to the transactions' hashes queue
+       @param hash transaction's hash
+     */
+    void
+    addTxQueue(uint256 const& hash) override;
+
+    /** Remove transaction's hash from the transactions' hashes queue
+       @param hash transaction's hash
+     */
+    void
+    removeTxQueue(uint256 const& hash) override;
 
     /** Send a set of PeerFinder endpoints as a protocol message. */
     template <
@@ -327,17 +328,14 @@ public:
     bool
     cluster() const override;
 
-    void
-    check();
-
-    /** Check if the peer is sane
+    /** Check if the peer is tracking
         @param validationSeq The ledger sequence of a recently-validated ledger
     */
     void
-    checkSanity(std::uint32_t validationSeq);
+    checkTracking(std::uint32_t validationSeq);
 
     void
-    checkSanity(std::uint32_t seq1, std::uint32_t seq2);
+    checkTracking(std::uint32_t seq1, std::uint32_t seq2);
 
     PublicKey const&
     getNodePublic() const override
@@ -362,7 +360,7 @@ public:
     bool
     supportsFeature(ProtocolFeature f) const override;
 
-    boost::optional<std::size_t>
+    std::optional<std::size_t>
     publisherListSequence(PublicKey const& pubKey) const override
     {
         std::lock_guard<std::mutex> sl(recentLock_);
@@ -399,9 +397,6 @@ public:
     ledgerRange(std::uint32_t& minSeq, std::uint32_t& maxSeq) const override;
 
     bool
-    hasShard(std::uint32_t shardIndex) const override;
-
-    bool
     hasTxSet(uint256 const& hash) const override;
 
     void
@@ -420,18 +415,20 @@ public:
     void
     fail(std::string const& reason);
 
-    /** Return a range set of known shard indexes from this peer. */
-    boost::optional<RangeSet<std::uint32_t>>
-    getShardIndexes() const;
-
-    /** Return any known shard info from this peer and its sub peers. */
-    boost::optional<hash_map<PublicKey, ShardInfo>>
-    getPeerShardInfo() const;
+    // Return any known shard info from this peer and its sub peers
+    [[nodiscard]] hash_map<PublicKey, NodeStore::ShardInfo> const
+    getPeerShardInfos() const;
 
     bool
     compressionEnabled() const override
     {
         return compressionEnabled_ == Compressed::On;
+    }
+
+    bool
+    txReduceRelayEnabled() const override
+    {
+        return txReduceRelayEnabled_;
     }
 
 private:
@@ -464,19 +461,11 @@ private:
     void
     doAccept();
 
-    http_response_type
-    makeResponse(
-        bool crawl,
-        http_request_type const& req,
-        beast::IP::Address remote_ip,
-        uint256 const& sharedValue);
-
-    void
-    onWriteResponse(error_code ec, std::size_t bytes_transferred);
-
-    // A thread-safe way of getting the name.
     std::string
-    getName() const;
+    name() const;
+
+    std::string
+    domain() const;
 
     //
     // protocol message loop
@@ -494,6 +483,34 @@ private:
     void
     onWriteMessage(error_code ec, std::size_t bytes_transferred);
 
+    /** Called from onMessage(TMTransaction(s)).
+       @param m Transaction protocol message
+       @param eraseTxQueue is true when called from onMessage(TMTransaction)
+       and is false when called from onMessage(TMTransactions). If true then
+       the transaction hash is erased from txQueue_. Don't need to erase from
+       the queue when called from onMessage(TMTransactions) because this
+       message is a response to the missing transactions request and the queue
+       would not have any of these transactions.
+     */
+    void
+    handleTransaction(
+        std::shared_ptr<protocol::TMTransaction> const& m,
+        bool eraseTxQueue);
+
+    /** Handle protocol message with hashes of transactions that have not
+       been relayed by an upstream node down to its peers - request
+       transactions, which have not been relayed to this peer.
+       @param m protocol message with transactions' hashes
+     */
+    void
+    handleHaveTransactions(
+        std::shared_ptr<protocol::TMHaveTransactions> const& m);
+
+    // Check if reduce-relay feature is enabled and
+    // reduce_relay::WAIT_ON_BOOTUP time passed since the start
+    bool
+    reduceRelayReady();
+
 public:
     //--------------------------------------------------------------------------
     //
@@ -508,7 +525,9 @@ public:
     onMessageBegin(
         std::uint16_t type,
         std::shared_ptr<::google::protobuf::Message> const& m,
-        std::size_t size);
+        std::size_t size,
+        std::size_t uncompressed_size,
+        bool isCompressed);
 
     void
     onMessageEnd(
@@ -522,13 +541,13 @@ public:
     void
     onMessage(std::shared_ptr<protocol::TMCluster> const& m);
     void
-    onMessage(std::shared_ptr<protocol::TMGetShardInfo> const& m);
-    void
-    onMessage(std::shared_ptr<protocol::TMShardInfo> const& m);
-    void
     onMessage(std::shared_ptr<protocol::TMGetPeerShardInfo> const& m);
     void
     onMessage(std::shared_ptr<protocol::TMPeerShardInfo> const& m);
+    void
+    onMessage(std::shared_ptr<protocol::TMGetPeerShardInfoV2> const& m);
+    void
+    onMessage(std::shared_ptr<protocol::TMPeerShardInfoV2> const& m);
     void
     onMessage(std::shared_ptr<protocol::TMEndpoints> const& m);
     void
@@ -546,23 +565,27 @@ public:
     void
     onMessage(std::shared_ptr<protocol::TMValidatorList> const& m);
     void
+    onMessage(std::shared_ptr<protocol::TMValidatorListCollection> const& m);
+    void
     onMessage(std::shared_ptr<protocol::TMValidation> const& m);
     void
     onMessage(std::shared_ptr<protocol::TMGetObjectByHash> const& m);
+    void
+    onMessage(std::shared_ptr<protocol::TMHaveTransactions> const& m);
+    void
+    onMessage(std::shared_ptr<protocol::TMTransactions> const& m);
+    void
+    onMessage(std::shared_ptr<protocol::TMSquelch> const& m);
+    void
+    onMessage(std::shared_ptr<protocol::TMProofPathRequest> const& m);
+    void
+    onMessage(std::shared_ptr<protocol::TMProofPathResponse> const& m);
+    void
+    onMessage(std::shared_ptr<protocol::TMReplayDeltaRequest> const& m);
+    void
+    onMessage(std::shared_ptr<protocol::TMReplayDeltaResponse> const& m);
 
 private:
-    State
-    state() const
-    {
-        return state_;
-    }
-
-    void
-    state(State new_state)
-    {
-        state_ = new_state;
-    }
-
     //--------------------------------------------------------------------------
     // lockedRecentLock is passed as a reminder to callers that recentLock_
     // must be locked.
@@ -573,6 +596,20 @@ private:
 
     void
     doFetchPack(const std::shared_ptr<protocol::TMGetObjectByHash>& packet);
+
+    void
+    onValidatorListMessage(
+        std::string const& messageType,
+        std::string const& manifest,
+        std::uint32_t version,
+        std::vector<ValidatorBlobInfo> const& blobs);
+
+    /** Process peer's request to send missing transactions. The request is
+        sent in response to TMHaveTransactions.
+        @param packet protocol message containing missing transactions' hashes.
+     */
+    void
+    doTransactions(std::shared_ptr<protocol::TMGetObjectByHash> const& packet);
 
     void
     checkTransaction(
@@ -592,14 +629,18 @@ private:
         std::shared_ptr<protocol::TMValidation> const& packet);
 
     void
-    getLedger(std::shared_ptr<protocol::TMGetLedger> const& packet);
+    sendLedgerBase(
+        std::shared_ptr<Ledger const> const& ledger,
+        protocol::TMLedgerData& ledgerData);
 
-    // Called when we receive tx set data.
+    std::shared_ptr<Ledger const>
+    getLedger(std::shared_ptr<protocol::TMGetLedger> const& m);
+
+    std::shared_ptr<SHAMap const>
+    getTxSet(std::shared_ptr<protocol::TMGetLedger> const& m) const;
+
     void
-    peerTXData(
-        uint256 const& hash,
-        std::shared_ptr<protocol::TMLedgerData> const& pPacket,
-        beast::Journal journal);
+    processLedgerRequest(std::shared_ptr<protocol::TMGetLedger> const& m);
 };
 
 //------------------------------------------------------------------------------
@@ -630,25 +671,50 @@ PeerImp::PeerImp(
     , timer_(waitable_timer{socket_.get_executor()})
     , remote_address_(slot->remote_endpoint())
     , overlay_(overlay)
-    , m_inbound(false)
+    , inbound_(false)
     , protocol_(protocol)
-    , state_(State::active)
-    , sanity_(Sanity::unknown)
-    , insaneTime_(clock_type::now())
+    , tracking_(Tracking::unknown)
+    , trackingTime_(clock_type::now())
     , publicKey_(publicKey)
+    , lastPingTime_(clock_type::now())
     , creationTime_(clock_type::now())
+    , squelch_(app_.journal("Squelch"))
     , usage_(usage)
     , fee_(Resource::feeLightPeer)
     , slot_(std::move(slot))
     , response_(std::move(response))
     , headers_(response_)
     , compressionEnabled_(
-          headers_["X-Offer-Compression"] == "lz4" && app_.config().COMPRESSION
+          peerFeatureEnabled(
+              headers_,
+              FEATURE_COMPR,
+              "lz4",
+              app_.config().COMPRESSION)
               ? Compressed::On
               : Compressed::Off)
+    , txReduceRelayEnabled_(peerFeatureEnabled(
+          headers_,
+          FEATURE_TXRR,
+          app_.config().TX_REDUCE_RELAY_ENABLE))
+    , vpReduceRelayEnabled_(peerFeatureEnabled(
+          headers_,
+          FEATURE_VPRR,
+          app_.config().VP_REDUCE_RELAY_ENABLE))
+    , ledgerReplayEnabled_(peerFeatureEnabled(
+          headers_,
+          FEATURE_LEDGER_REPLAY,
+          app_.config().LEDGER_REPLAY))
+    , ledgerReplayMsgHandler_(app, app.getLedgerReplayer())
 {
     read_buffer_.commit(boost::asio::buffer_copy(
         read_buffer_.prepare(boost::asio::buffer_size(buffers)), buffers));
+    JLOG(journal_.info()) << "compression enabled "
+                          << (compressionEnabled_ == Compressed::On)
+                          << " vp reduce-relay enabled "
+                          << vpReduceRelayEnabled_
+                          << " tx reduce-relay enabled "
+                          << txReduceRelayEnabled_ << " on " << remote_address_
+                          << " " << id_;
 }
 
 template <class FwdIt, class>
@@ -656,24 +722,13 @@ void
 PeerImp::sendEndpoints(FwdIt first, FwdIt last)
 {
     protocol::TMEndpoints tm;
-    for (; first != last; ++first)
-    {
-        auto const& ep = *first;
-        // eventually remove endpoints and just keep endpoints_v2
-        // (once we are sure the entire network understands endpoints_v2)
-        protocol::TMEndpoint& tme(*tm.add_endpoints());
-        if (ep.address.is_v4())
-            tme.mutable_ipv4()->set_ipv4(boost::endian::native_to_big(
-                static_cast<std::uint32_t>(ep.address.to_v4().to_ulong())));
-        else
-            tme.mutable_ipv4()->set_ipv4(0);
-        tme.mutable_ipv4()->set_ipv4port(ep.address.port());
-        tme.set_hops(ep.hops);
 
-        // add v2 endpoints (strings)
+    while (first != last)
+    {
         auto& tme2(*tm.add_endpoints_v2());
-        tme2.set_endpoint(ep.address.to_string());
-        tme2.set_hops(ep.hops);
+        tme2.set_endpoint(first->address.to_string());
+        tme2.set_hops(first->hops);
+        first++;
     }
     tm.set_version(2);
 

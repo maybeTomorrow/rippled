@@ -45,8 +45,9 @@ public:
     bool
     equal(base_type const& impl) const override
     {
-        auto const& other = dynamic_cast<txs_iter_impl const&>(impl);
-        return iter_ == other.iter_;
+        if (auto const p = dynamic_cast<txs_iter_impl const*>(&impl))
+            return iter_ == p->iter_;
+        return false;
     }
 
     void
@@ -60,12 +61,12 @@ public:
     {
         value_type result;
         {
-            SerialIter sit(iter_->second.first->slice());
+            SerialIter sit(iter_->second.txn->slice());
             result.first = std::make_shared<STTx const>(sit);
         }
         if (metadata_)
         {
-            SerialIter sit(iter_->second.second->slice());
+            SerialIter sit(iter_->second.meta->slice());
             result.second = std::make_shared<STObject const>(sit, sfMetadata);
         }
         return result;
@@ -74,12 +75,31 @@ public:
 
 //------------------------------------------------------------------------------
 
+OpenView::OpenView(OpenView const& rhs)
+    : ReadView(rhs)
+    , TxsRawView(rhs)
+    , monotonic_resource_{std::make_unique<
+          boost::container::pmr::monotonic_buffer_resource>(initialBufferSize)}
+    , txs_{rhs.txs_, monotonic_resource_.get()}
+    , rules_{rhs.rules_}
+    , info_{rhs.info_}
+    , base_{rhs.base_}
+    , items_{rhs.items_}
+    , hold_{rhs.hold_}
+    , open_{rhs.open_} {};
+
 OpenView::OpenView(
     open_ledger_t,
     ReadView const* base,
     Rules const& rules,
     std::shared_ptr<void const> hold)
-    : rules_(rules), info_(base->info()), base_(base), hold_(std::move(hold))
+    : monotonic_resource_{std::make_unique<
+          boost::container::pmr::monotonic_buffer_resource>(initialBufferSize)}
+    , txs_{monotonic_resource_.get()}
+    , rules_(rules)
+    , info_(base->info())
+    , base_(base)
+    , hold_(std::move(hold))
 {
     info_.validated = false;
     info_.accepted = false;
@@ -89,7 +109,10 @@ OpenView::OpenView(
 }
 
 OpenView::OpenView(ReadView const* base, std::shared_ptr<void const> hold)
-    : rules_(base->rules())
+    : monotonic_resource_{std::make_unique<
+          boost::container::pmr::monotonic_buffer_resource>(initialBufferSize)}
+    , txs_{monotonic_resource_.get()}
+    , rules_(base->rules())
     , info_(base->info())
     , base_(base)
     , hold_(std::move(hold))
@@ -108,7 +131,7 @@ OpenView::apply(TxsRawView& to) const
 {
     items_.apply(to);
     for (auto const& item : txs_)
-        to.rawTxInsert(item.first, item.second.first, item.second.second);
+        to.rawTxInsert(item.first, item.second.txn, item.second.meta);
 }
 
 //---
@@ -138,8 +161,8 @@ OpenView::exists(Keylet const& k) const
 }
 
 auto
-OpenView::succ(key_type const& key, boost::optional<key_type> const& last) const
-    -> boost::optional<key_type>
+OpenView::succ(key_type const& key, std::optional<key_type> const& last) const
+    -> std::optional<key_type>
 {
     return items_.succ(*base_, key, last);
 }
@@ -194,11 +217,11 @@ OpenView::txRead(key_type const& key) const -> tx_type
     if (iter == txs_.end())
         return base_->txRead(key);
     auto const& item = iter->second;
-    auto stx = std::make_shared<STTx const>(SerialIter{item.first->slice()});
+    auto stx = std::make_shared<STTx const>(SerialIter{item.txn->slice()});
     decltype(tx_type::second) sto;
-    if (item.second)
+    if (item.meta)
         sto = std::make_shared<STObject const>(
-            SerialIter{item.second->slice()}, sfMetadata);
+            SerialIter{item.meta->slice()}, sfMetadata);
     else
         sto = nullptr;
     return {std::move(stx), std::move(sto)};
@@ -240,7 +263,10 @@ OpenView::rawTxInsert(
     std::shared_ptr<Serializer const> const& txn,
     std::shared_ptr<Serializer const> const& metaData)
 {
-    auto const result = txs_.emplace(key, std::make_pair(txn, metaData));
+    auto const result = txs_.emplace(
+        std::piecewise_construct,
+        std::forward_as_tuple(key),
+        std::forward_as_tuple(txn, metaData));
     if (!result.second)
         LogicError("rawTxInsert: duplicate TX id" + to_string(key));
 }

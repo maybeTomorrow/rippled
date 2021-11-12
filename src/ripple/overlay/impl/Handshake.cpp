@@ -34,6 +34,81 @@
 
 namespace ripple {
 
+std::optional<std::string>
+getFeatureValue(
+    boost::beast::http::fields const& headers,
+    std::string const& feature)
+{
+    auto const header = headers.find("X-Protocol-Ctl");
+    if (header == headers.end())
+        return {};
+    boost::smatch match;
+    boost::regex rx(feature + "=([^;\\s]+)");
+    auto const value = header->value().to_string();
+    if (boost::regex_search(value, match, rx))
+        return {match[1]};
+    return {};
+}
+
+bool
+isFeatureValue(
+    boost::beast::http::fields const& headers,
+    std::string const& feature,
+    std::string const& value)
+{
+    if (auto const fvalue = getFeatureValue(headers, feature))
+        return beast::rfc2616::token_in_list(fvalue.value(), value);
+
+    return false;
+}
+
+bool
+featureEnabled(
+    boost::beast::http::fields const& headers,
+    std::string const& feature)
+{
+    return isFeatureValue(headers, feature, "1");
+}
+
+std::string
+makeFeaturesRequestHeader(
+    bool comprEnabled,
+    bool ledgerReplayEnabled,
+    bool txReduceRelayEnabled,
+    bool vpReduceRelayEnabled)
+{
+    std::stringstream str;
+    if (comprEnabled)
+        str << FEATURE_COMPR << "=lz4" << DELIM_FEATURE;
+    if (ledgerReplayEnabled)
+        str << FEATURE_LEDGER_REPLAY << "=1" << DELIM_FEATURE;
+    if (txReduceRelayEnabled)
+        str << FEATURE_TXRR << "=1" << DELIM_FEATURE;
+    if (vpReduceRelayEnabled)
+        str << FEATURE_VPRR << "=1" << DELIM_FEATURE;
+    return str.str();
+}
+
+std::string
+makeFeaturesResponseHeader(
+    http_request_type const& headers,
+    bool comprEnabled,
+    bool ledgerReplayEnabled,
+    bool txReduceRelayEnabled,
+    bool vpReduceRelayEnabled)
+{
+    std::stringstream str;
+    if (comprEnabled && isFeatureValue(headers, FEATURE_COMPR, "lz4"))
+        str << FEATURE_COMPR << "=lz4" << DELIM_FEATURE;
+    if (ledgerReplayEnabled && featureEnabled(headers, FEATURE_LEDGER_REPLAY))
+        str << FEATURE_LEDGER_REPLAY << "=1" << DELIM_FEATURE;
+    if (txReduceRelayEnabled && featureEnabled(headers, FEATURE_TXRR))
+        str << FEATURE_TXRR << "=1" << DELIM_FEATURE;
+    if (vpReduceRelayEnabled && featureEnabled(headers, FEATURE_VPRR))
+        str << FEATURE_VPRR << "=1" << DELIM_FEATURE;
+    return str.str();
+}
+
 /** Hashes the latest finished message from an SSL stream.
 
     @param ssl the session to get the message from.
@@ -48,7 +123,7 @@ namespace ripple {
           this topic, see https://github.com/openssl/openssl/issues/5509 and
           https://github.com/ripple/rippled/issues/2413.
 */
-static boost::optional<base_uint<512>>
+static std::optional<base_uint<512>>
 hashLastMessage(SSL const* ssl, size_t (*get)(const SSL*, void*, size_t))
 {
     constexpr std::size_t sslMinimumFinishedLength = 12;
@@ -57,7 +132,7 @@ hashLastMessage(SSL const* ssl, size_t (*get)(const SSL*, void*, size_t))
     size_t len = get(ssl, buf, sizeof(buf));
 
     if (len < sslMinimumFinishedLength)
-        return boost::none;
+        return std::nullopt;
 
     sha512_hasher h;
 
@@ -66,14 +141,14 @@ hashLastMessage(SSL const* ssl, size_t (*get)(const SSL*, void*, size_t))
     return cookie;
 }
 
-boost::optional<uint256>
+std::optional<uint256>
 makeSharedValue(stream_type& ssl, beast::Journal journal)
 {
     auto const cookie1 = hashLastMessage(ssl.native_handle(), SSL_get_finished);
     if (!cookie1)
     {
         JLOG(journal.error()) << "Cookie generation: local setup not complete";
-        return boost::none;
+        return std::nullopt;
     }
 
     auto const cookie2 =
@@ -81,7 +156,7 @@ makeSharedValue(stream_type& ssl, beast::Journal journal)
     if (!cookie2)
     {
         JLOG(journal.error()) << "Cookie generation: peer setup not complete";
-        return boost::none;
+        return std::nullopt;
     }
 
     auto const result = (*cookie1 ^ *cookie2);
@@ -92,7 +167,7 @@ makeSharedValue(stream_type& ssl, beast::Journal journal)
     {
         JLOG(journal.error())
             << "Cookie generation: identical finished messages";
-        return boost::none;
+        return std::nullopt;
     }
 
     return sha512Half(Slice(result.data(), result.size()));
@@ -102,7 +177,7 @@ void
 buildHandshake(
     boost::beast::http::fields& h,
     ripple::uint256 const& sharedValue,
-    boost::optional<std::uint32_t> networkID,
+    std::optional<std::uint32_t> networkID,
     beast::IP::Address public_ip,
     beast::IP::Address remote_ip,
     Application& app)
@@ -129,6 +204,9 @@ buildHandshake(
         h.insert("Session-Signature", base64_encode(sig.data(), sig.size()));
     }
 
+    if (!app.config().SERVER_DOMAIN.empty())
+        h.insert("Server-Domain", app.config().SERVER_DOMAIN);
+
     if (beast::IP::is_public(remote_ip))
         h.insert("Remote-IP", remote_ip.to_string());
 
@@ -152,23 +230,26 @@ PublicKey
 verifyHandshake(
     boost::beast::http::fields const& headers,
     ripple::uint256 const& sharedValue,
-    boost::optional<std::uint32_t> networkID,
+    std::optional<std::uint32_t> networkID,
     beast::IP::Address public_ip,
     beast::IP::Address remote,
     Application& app)
 {
-    if (networkID)
+    if (auto const iter = headers.find("Server-Domain"); iter != headers.end())
     {
-        if (auto const iter = headers.find("Network-ID"); iter != headers.end())
-        {
-            std::uint32_t nid;
+        if (!isProperlyFormedTomlDomain(iter->value().to_string()))
+            throw std::runtime_error("Invalid server domain");
+    }
 
-            if (!beast::lexicalCastChecked(nid, iter->value().to_string()))
-                throw std::runtime_error("Invalid peer network identifier");
+    if (auto const iter = headers.find("Network-ID"); iter != headers.end())
+    {
+        std::uint32_t nid;
 
-            if (nid != *networkID)
-                throw std::runtime_error("Peer is on a different network");
-        }
+        if (!beast::lexicalCastChecked(nid, iter->value().to_string()))
+            throw std::runtime_error("Invalid peer network identifier");
+
+        if (networkID && nid != *networkID)
+            throw std::runtime_error("Peer is on a different network");
     }
 
     if (auto const iter = headers.find("Network-Time"); iter != headers.end())
@@ -193,7 +274,6 @@ verifyHandshake(
         // We can't blindly "return a-b;" because TimeKeeper::time_point
         // uses an unsigned integer for representing durations, which is
         // a problem when trying to subtract time points.
-        // FIXME: @HowardHinnant, should we migrate to using std::int64_t?
         auto calculateOffset = [](TimeKeeper::time_point a,
                                   TimeKeeper::time_point b) {
             if (a > b)
@@ -203,7 +283,7 @@ verifyHandshake(
 
         auto const offset = calculateOffset(netTime, ourTime);
 
-        if (date::abs(offset) > tolerance)
+        if (abs(offset) > tolerance)
             throw std::runtime_error("Peer clock is too far off");
     }
 
@@ -283,6 +363,66 @@ verifyHandshake(
     }
 
     return publicKey;
+}
+
+auto
+makeRequest(
+    bool crawlPublic,
+    bool comprEnabled,
+    bool ledgerReplayEnabled,
+    bool txReduceRelayEnabled,
+    bool vpReduceRelayEnabled) -> request_type
+{
+    request_type m;
+    m.method(boost::beast::http::verb::get);
+    m.target("/");
+    m.version(11);
+    m.insert("User-Agent", BuildInfo::getFullVersionString());
+    m.insert("Upgrade", supportedProtocolVersions());
+    m.insert("Connection", "Upgrade");
+    m.insert("Connect-As", "Peer");
+    m.insert("Crawl", crawlPublic ? "public" : "private");
+    m.insert(
+        "X-Protocol-Ctl",
+        makeFeaturesRequestHeader(
+            comprEnabled,
+            ledgerReplayEnabled,
+            txReduceRelayEnabled,
+            vpReduceRelayEnabled));
+    return m;
+}
+
+http_response_type
+makeResponse(
+    bool crawlPublic,
+    http_request_type const& req,
+    beast::IP::Address public_ip,
+    beast::IP::Address remote_ip,
+    uint256 const& sharedValue,
+    std::optional<std::uint32_t> networkID,
+    ProtocolVersion protocol,
+    Application& app)
+{
+    http_response_type resp;
+    resp.result(boost::beast::http::status::switching_protocols);
+    resp.version(req.version());
+    resp.insert("Connection", "Upgrade");
+    resp.insert("Upgrade", to_string(protocol));
+    resp.insert("Connect-As", "Peer");
+    resp.insert("Server", BuildInfo::getFullVersionString());
+    resp.insert("Crawl", crawlPublic ? "public" : "private");
+    resp.insert(
+        "X-Protocol-Ctl",
+        makeFeaturesResponseHeader(
+            req,
+            app.config().COMPRESSION,
+            app.config().LEDGER_REPLAY,
+            app.config().TX_REDUCE_RELAY_ENABLE,
+            app.config().VP_REDUCE_RELAY_ENABLE));
+
+    buildHandshake(resp, sharedValue, networkID, public_ip, remote_ip, app);
+
+    return resp;
 }
 
 }  // namespace ripple

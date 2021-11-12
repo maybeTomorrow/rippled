@@ -22,6 +22,7 @@
 #include <ripple/app/misc/NetworkOPs.h>
 #include <ripple/app/misc/SHAMapStore.h>
 #include <ripple/beast/core/LexicalCast.h>
+#include <ripple/protocol/ErrorCodes.h>
 #include <ripple/protocol/jss.h>
 #include <ripple/rpc/Context.h>
 #include <boost/algorithm/string/case_conv.hpp>
@@ -33,6 +34,9 @@ namespace ripple {
 Json::Value
 doCanDelete(RPC::JsonContext& context)
 {
+    if (context.app.config().reporting())
+        return RPC::make_error(rpcREPORTING_UNSUPPORTED);
+
     if (!context.app.getSHAMapStore().advisoryDelete())
         return RPC::make_error(rpcNOT_ENABLED);
 
@@ -71,13 +75,9 @@ doCanDelete(RPC::JsonContext& context)
                 if (!canDeleteSeq)
                     return RPC::make_error(rpcNOT_READY);
             }
-            else if (
-                canDeleteStr.size() == 64 &&
-                canDeleteStr.find_first_not_of("0123456789abcdef") ==
-                    std::string::npos)
+            else if (uint256 lh; lh.parseHex(canDeleteStr))
             {
-                auto ledger = context.ledgerMaster.getLedgerByHash(
-                    from_hex_text<uint256>(canDeleteStr));
+                auto ledger = context.ledgerMaster.getLedgerByHash(lh);
 
                 if (!ledger)
                     return RPC::make_error(rpcLGR_NOT_FOUND, "ledgerNotFound");

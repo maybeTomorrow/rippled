@@ -57,8 +57,10 @@ private:
             2000ms,
             5000ms);
         add(jtTRANSACTION_l, "localTransaction", maxLimit, false, 100ms, 500ms);
+        add(jtREPLAY_REQ, "ledgerReplayRequest", 10, false, 250ms, 1000ms);
         add(jtLEDGER_REQ, "ledgerRequest", 2, false, 0ms, 0ms);
         add(jtPROPOSAL_ut, "untrustedProposal", maxLimit, false, 500ms, 1250ms);
+        add(jtREPLAY_TASK, "ledgerReplayTask", maxLimit, false, 0ms, 0ms);
         add(jtLEDGER_DATA, "ledgerData", 2, false, 0ms, 0ms);
         add(jtCLIENT, "clientCommand", maxLimit, false, 2000ms, 5000ms);
         add(jtRPC, "RPC", maxLimit, false, 0ms, 0ms);
@@ -82,6 +84,8 @@ private:
         add(jtNETOP_CLUSTER, "clusterReport", 1, false, 9999ms, 9999ms);
         add(jtNETOP_TIMER, "heartbeat", 1, false, 999ms, 999ms);
         add(jtADMIN, "administration", maxLimit, false, 0ms, 0ms);
+        add(jtMISSING_TXN, "handleHaveTransactions", 1200, false, 0ms, 0ms);
+        add(jtREQUESTED_TXN, "doTransactions", 1200, false, 0ms, 0ms);
 
         add(jtPEER, "peerCommand", 0, true, 200ms, 2500ms);
         add(jtDISK, "diskAccess", 0, true, 500ms, 1000ms);
@@ -102,6 +106,12 @@ public:
     {
         static JobTypes const types;
         return types;
+    }
+
+    static std::string const&
+    name(JobType jt)
+    {
+        return instance().get(jt).name();
     }
 
     JobTypeInfo const&

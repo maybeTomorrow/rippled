@@ -161,7 +161,6 @@ checkPayment(
     AccountID const& srcAddressID,
     Role const role,
     Application& app,
-    std::shared_ptr<ReadView const> const& ledger,
     bool doPath)
 {
     // Only path find for Payments.
@@ -220,7 +219,8 @@ checkPayment(
                 return rpcError(rpcTOO_BUSY);
 
             STPathSet result;
-            if (ledger)
+
+            if (auto ledger = app.openLedger().current())
             {
                 Pathfinder pf(
                     std::make_shared<RippleLineCache>(ledger),
@@ -229,7 +229,7 @@ checkPayment(
                     sendMax.issue().currency,
                     sendMax.issue().account,
                     amount,
-                    boost::none,
+                    std::nullopt,
                     app);
                 if (pf.findPaths(app.config().PATH_SEARCH_OLD))
                 {
@@ -363,8 +363,7 @@ transactionPreProcessImpl(
     Role role,
     SigningForParams& signingArgs,
     std::chrono::seconds validatedLedgerAge,
-    Application& app,
-    std::shared_ptr<OpenView const> const& ledger)
+    Application& app)
 {
     auto j = app.journal("RPCHandler");
 
@@ -389,7 +388,7 @@ transactionPreProcessImpl(
         validatedLedgerAge,
         app.config(),
         app.getFeeTrack(),
-        getAPIVersionNumber(params));
+        getAPIVersionNumber(params, app.config().BETA_RPC_API));
 
     if (RPC::contains_error(txJsonResult))
         return std::move(txJsonResult);
@@ -400,8 +399,9 @@ transactionPreProcessImpl(
     if (!verify && !tx_json.isMember(jss::Sequence))
         return RPC::missing_field_error("tx_json.Sequence");
 
-    std::shared_ptr<SLE const> sle =
-        ledger->read(keylet::account(srcAddressID));
+    std::shared_ptr<SLE const> sle;
+    if (verify)
+        sle = app.openLedger().current()->read(keylet::account(srcAddressID));
 
     if (verify && !sle)
     {
@@ -420,7 +420,7 @@ transactionPreProcessImpl(
             app.config(),
             app.getFeeTrack(),
             app.getTxQ(),
-            ledger);
+            app);
 
         if (RPC::contains_error(err))
             return err;
@@ -431,7 +431,6 @@ transactionPreProcessImpl(
             srcAddressID,
             role,
             app,
-            ledger,
             verify && signingArgs.editFields());
 
         if (RPC::contains_error(err))
@@ -442,7 +441,9 @@ transactionPreProcessImpl(
     {
         if (!tx_json.isMember(jss::Sequence))
         {
-            if (!sle)
+            bool const hasTicketSeq =
+                tx_json.isMember(sfTicketSequence.jsonName);
+            if (!hasTicketSeq && !sle)
             {
                 JLOG(j.debug())
                     << "transactionSign: Failed to find source account "
@@ -450,20 +451,8 @@ transactionPreProcessImpl(
 
                 return rpcError(rpcSRC_ACT_NOT_FOUND);
             }
-
-            auto seq = (*sle)[sfSequence];
-            auto const queued =
-                app.getTxQ().getAccountTxs(srcAddressID, *ledger);
-            // If the account has any txs in the TxQ, skip those sequence
-            // numbers (accounting for possible gaps).
-            for (auto const& tx : queued)
-            {
-                if (tx.first == seq)
-                    ++seq;
-                else if (tx.first > seq)
-                    break;
-            }
-            tx_json[jss::Sequence] = seq;
+            tx_json[jss::Sequence] =
+                hasTicketSeq ? 0 : app.getTxQ().nextQueuableSeq(sle).value();
         }
 
         if (!tx_json.isMember(jss::Flags))
@@ -507,7 +496,7 @@ transactionPreProcessImpl(
     }
 
     STParsedJSONObject parsed(std::string(jss::tx_json), tx_json);
-    if (parsed.object == boost::none)
+    if (!parsed.object.has_value())
     {
         Json::Value err;
         err[jss::error] = parsed.error[jss::error];
@@ -525,7 +514,7 @@ transactionPreProcessImpl(
             sfSigningPubKey,
             signingArgs.isMultiSigning() ? Slice(nullptr, 0) : pk.slice());
 
-        stpTrans = std::make_shared<STTx>(std::move(parsed.object.get()));
+        stpTrans = std::make_shared<STTx>(std::move(parsed.object.value()));
     }
     catch (STObject::FieldErr& err)
     {
@@ -680,7 +669,7 @@ checkFee(
     Config const& config,
     LoadFeeTrack const& feeTrack,
     TxQ const& txQ,
-    std::shared_ptr<OpenView const> const& ledger)
+    Application const& app)
 {
     Json::Value& tx(request[jss::tx_json]);
     if (tx.isMember(jss::Fee))
@@ -733,6 +722,7 @@ checkFee(
     // Default fee in fee units.
     FeeUnit32 const feeDefault = config.TRANSACTION_FEE_BASE;
 
+    auto ledger = app.openLedger().current();
     // Administrative and identified endpoints are exempt from local fees.
     XRPAmount const loadFee =
         scaleFeeLoad(feeDefault, feeTrack, ledger->fees(), isUnlimited(role));
@@ -741,9 +731,7 @@ checkFee(
         auto const metrics = txQ.getMetrics(*ledger);
         auto const baseFee = ledger->fees().base;
         auto escalatedFee =
-            toDrops(metrics.openLedgerFeeLevel - FeeLevel64{1}, baseFee)
-                .second +
-            1;
+            toDrops(metrics.openLedgerFeeLevel - FeeLevel64(1), baseFee) + 1;
         fee = std::max(fee, escalatedFee);
     }
 
@@ -784,18 +772,22 @@ transactionSign(
 {
     using namespace detail;
 
-    auto const& ledger = app.openLedger().current();
     auto j = app.journal("RPCHandler");
     JLOG(j.debug()) << "transactionSign: " << jvRequest;
 
     // Add and amend fields based on the transaction type.
     SigningForParams signForParams;
     transactionPreProcessResult preprocResult = transactionPreProcessImpl(
-        jvRequest, role, signForParams, validatedLedgerAge, app, ledger);
+        jvRequest, role, signForParams, validatedLedgerAge, app);
 
     if (!preprocResult.second)
         return preprocResult.first;
 
+    std::shared_ptr<const ReadView> ledger;
+    if (app.config().reporting())
+        ledger = app.getLedgerMaster().getValidatedLedger();
+    else
+        ledger = app.openLedger().current();
     // Make sure the STTx makes a legitimate Transaction.
     std::pair<Json::Value, Transaction::pointer> txn =
         transactionConstructImpl(preprocResult.second, ledger->rules(), app);
@@ -825,7 +817,7 @@ transactionSubmit(
     // Add and amend fields based on the transaction type.
     SigningForParams signForParams;
     transactionPreProcessResult preprocResult = transactionPreProcessImpl(
-        jvRequest, role, signForParams, validatedLedgerAge, app, ledger);
+        jvRequest, role, signForParams, validatedLedgerAge, app);
 
     if (!preprocResult.second)
         return preprocResult.first;
@@ -994,7 +986,7 @@ transactionSignFor(
         *signerAccountID, multiSignPubKey, multiSignature);
 
     transactionPreProcessResult preprocResult = transactionPreProcessImpl(
-        jvRequest, role, signForParams, validatedLedgerAge, app, ledger);
+        jvRequest, role, signForParams, validatedLedgerAge, app);
 
     if (!preprocResult.second)
         return preprocResult.first;
@@ -1074,7 +1066,7 @@ transactionSubmitMultiSigned(
         validatedLedgerAge,
         app.config(),
         app.getFeeTrack(),
-        getAPIVersionNumber(jvRequest));
+        getAPIVersionNumber(jvRequest, app.config().BETA_RPC_API));
 
     if (RPC::contains_error(txJsonResult))
         return std::move(txJsonResult);
@@ -1100,13 +1092,12 @@ transactionSubmitMultiSigned(
             app.config(),
             app.getFeeTrack(),
             app.getTxQ(),
-            ledger);
+            app);
 
         if (RPC::contains_error(err))
             return err;
 
-        err = checkPayment(
-            jvRequest, tx_json, srcAddressID, role, app, ledger, false);
+        err = checkPayment(jvRequest, tx_json, srcAddressID, role, app, false);
 
         if (RPC::contains_error(err))
             return err;
@@ -1127,7 +1118,7 @@ transactionSubmitMultiSigned(
         try
         {
             stpTrans =
-                std::make_shared<STTx>(std::move(parsedTx_json.object.get()));
+                std::make_shared<STTx>(std::move(parsedTx_json.object.value()));
         }
         catch (STObject::FieldErr& err)
         {

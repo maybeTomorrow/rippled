@@ -26,6 +26,7 @@
 #include <nudb/store.hpp>
 
 namespace ripple {
+
 namespace NodeStore {
 
 /** Base class for backend factories. */
@@ -42,6 +43,7 @@ public:
 
         @param keyBytes The fixed number of bytes per key.
         @param parameters A set of key/value configuration pairs.
+        @param burstSize Backend burst size in bytes.
         @param scheduler The scheduler to use for running tasks.
         @return A pointer to the Backend object.
     */
@@ -49,6 +51,7 @@ public:
     createInstance(
         size_t keyBytes,
         Section const& parameters,
+        std::size_t burstSize,
         Scheduler& scheduler,
         beast::Journal journal) = 0;
 
@@ -56,6 +59,7 @@ public:
 
         @param keyBytes The fixed number of bytes per key.
         @param parameters A set of key/value configuration pairs.
+        @param burstSize Backend burst size in bytes.
         @param scheduler The scheduler to use for running tasks.
         @param context The context used by database.
         @return A pointer to the Backend object.
@@ -64,6 +68,7 @@ public:
     createInstance(
         size_t keyBytes,
         Section const& parameters,
+        std::size_t burstSize,
         Scheduler& scheduler,
         nudb::context& context,
         beast::Journal journal)

@@ -258,11 +258,11 @@ public:
         env.fund(XRP(10000), alice);
         auto jt = noop(alice);
 
-        uint256 somehash = from_hex_text<uint256>(
-            "9633ec8af54f16b5286db1d7b519ef49eefc050c0c8ac4384f1d88acd1bfdf05");
-        jt[sfWalletLocator.fieldName] = to_string(somehash);
+        std::string const locator =
+            "9633EC8AF54F16B5286DB1D7B519EF49EEFC050C0C8AC4384F1D88ACD1BFDF05";
+        jt[sfWalletLocator.fieldName] = locator;
         env(jt);
-        BEAST_EXPECT((*env.le(alice))[sfWalletLocator] == somehash);
+        BEAST_EXPECT(to_string((*env.le(alice))[sfWalletLocator]) == locator);
 
         jt[sfWalletLocator.fieldName] = "";
         env(jt);
@@ -280,11 +280,10 @@ public:
         env.fund(XRP(10000), alice);
         auto jt = noop(alice);
 
-        uint128 somehash =
-            from_hex_text<uint128>("fff680681c2f5e6095324e2e08838f221a72ab4f");
-        jt[sfEmailHash.fieldName] = to_string(somehash);
+        std::string const mh("5F31A79367DC3137FADA860C05742EE6");
+        jt[sfEmailHash.fieldName] = mh;
         env(jt);
-        BEAST_EXPECT((*env.le(alice))[sfEmailHash] == somehash);
+        BEAST_EXPECT(to_string((*env.le(alice))[sfEmailHash]) == mh);
 
         jt[sfEmailHash.fieldName] = "";
         env(jt);
@@ -495,6 +494,46 @@ public:
         BEAST_EXPECT(!dirIsEmpty(*env.closed(), keylet::ownerDir(alice)));
 
         env(fset(alice, asfRequireAuth), ter(tecOWNERS));
+
+        // Remove the signer list.  After that asfRequireAuth should succeed.
+        env(signers(alice, test::jtx::none));
+        env.close();
+        BEAST_EXPECT(dirIsEmpty(*env.closed(), keylet::ownerDir(alice)));
+
+        env(fset(alice, asfRequireAuth));
+    }
+
+    void
+    testTicket()
+    {
+        using namespace test::jtx;
+        Env env(*this);
+        Account const alice("alice");
+
+        env.fund(XRP(10000), alice);
+        env.close();
+
+        std::uint32_t const ticketSeq{env.seq(alice) + 1};
+        env(ticket::create(alice, 1));
+        env.close();
+        env.require(owners(alice, 1), tickets(alice, 1));
+
+        // Try using a ticket that alice doesn't have.
+        env(noop(alice), ticket::use(ticketSeq + 1), ter(terPRE_TICKET));
+        env.close();
+        env.require(owners(alice, 1), tickets(alice, 1));
+
+        // Actually use alice's ticket.  Note that if a transaction consumes
+        // a ticket then the account's sequence number does not advance.
+        std::uint32_t const aliceSeq{env.seq(alice)};
+        env(noop(alice), ticket::use(ticketSeq));
+        env.close();
+        env.require(owners(alice, 0), tickets(alice, 0));
+        BEAST_EXPECT(aliceSeq == env.seq(alice));
+
+        // Try re-using a ticket that alice already used.
+        env(noop(alice), ticket::use(ticketSeq), ter(tefNO_TICKET));
+        env.close();
     }
 
     void
@@ -512,9 +551,10 @@ public:
         testBadInputs();
         testRequireAuthWithDir();
         testTransferRate();
+        testTicket();
     }
 };
 
-BEAST_DEFINE_TESTSUITE(AccountSet, app, ripple);
+BEAST_DEFINE_TESTSUITE_PRIO(AccountSet, app, ripple, 1);
 
 }  // namespace ripple

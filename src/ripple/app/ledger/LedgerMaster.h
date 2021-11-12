@@ -23,7 +23,6 @@
 #include <ripple/app/ledger/AbstractFetchPackContainer.h>
 #include <ripple/app/ledger/InboundLedgers.h>
 #include <ripple/app/ledger/Ledger.h>
-#include <ripple/app/ledger/LedgerCleaner.h>
 #include <ripple/app/ledger/LedgerHistory.h>
 #include <ripple/app/ledger/LedgerHolder.h>
 #include <ripple/app/ledger/LedgerReplay.h>
@@ -31,15 +30,14 @@
 #include <ripple/app/misc/CanonicalTXSet.h>
 #include <ripple/basics/RangeSet.h>
 #include <ripple/basics/StringUtilities.h>
+#include <ripple/basics/UptimeClock.h>
 #include <ripple/basics/chrono.h>
 #include <ripple/beast/insight/Collector.h>
-#include <ripple/beast/utility/PropertyStream.h>
-#include <ripple/core/Stoppable.h>
 #include <ripple/protocol/Protocol.h>
 #include <ripple/protocol/RippleLedgerHash.h>
 #include <ripple/protocol/STValidation.h>
 #include <ripple/protocol/messages.h>
-#include <boost/optional.hpp>
+#include <optional>
 
 #include <mutex>
 
@@ -48,20 +46,33 @@ namespace ripple {
 class Peer;
 class Transaction;
 
+// This error is thrown when a codepath tries to access the open or closed
+// ledger while the server is running in reporting mode. Any RPCs that request
+// the open or closed ledger should be forwarded to a p2p node. Usually, the
+// decision to forward is made based on the required condition of the handler,
+// or which ledger is specified. However, there are some codepaths which are not
+// covered by the aforementioned logic (though they probably should), so this
+// error is thrown in case a codepath falls through the cracks.
+class ReportingShouldProxy : public std::runtime_error
+{
+public:
+    ReportingShouldProxy()
+        : std::runtime_error(
+              "Reporting mode has no open or closed ledger. Proxy this "
+              "request")
+    {
+    }
+};
+
 // Tracks the current ledger and any ledgers in the process of closing
 // Tracks ledger history
 // Tracks held transactions
-class LedgerMaster : public Stoppable, public AbstractFetchPackContainer
+class LedgerMaster : public AbstractFetchPackContainer
 {
 public:
-    // Age for last validated ledger if the process has yet to validate.
-    static constexpr std::chrono::seconds NO_VALIDATED_LEDGER_AGE =
-        std::chrono::hours{24 * 14};
-
     explicit LedgerMaster(
         Application& app,
         Stopwatch& stopwatch,
-        Stoppable& parent,
         beast::insight::Collector::ptr const& collector,
         beast::Journal journal);
 
@@ -86,15 +97,16 @@ public:
     std::shared_ptr<Ledger const>
     getClosedLedger()
     {
+        if (app_.config().reporting())
+        {
+            Throw<ReportingShouldProxy>();
+        }
         return mClosedLedger.get();
     }
 
-    // The validated ledger is the last fully validated ledger
+    // The validated ledger is the last fully validated ledger.
     std::shared_ptr<Ledger const>
-    getValidatedLedger()
-    {
-        return mValidLedger.get();
-    }
+    getValidatedLedger();
 
     // The Rules are in the last fully validated ledger if there is one.
     Rules
@@ -148,14 +160,13 @@ public:
     void
     applyHeldTransactions();
 
-    /** Get all the transactions held for a particular account.
-        This is normally called when a transaction for that
-        account is successfully applied to the open
-        ledger so those transactions can be resubmitted without
-        waiting for ledger close.
+    /** Get the next transaction held for a particular account if any.
+        This is normally called when a transaction for that account is
+        successfully applied to the open ledger so the next transaction
+        can be resubmitted without waiting for ledger close.
     */
-    std::vector<std::shared_ptr<STTx const>>
-    pruneHeldTransactions(AccountID const& account, std::uint32_t const seq);
+    std::shared_ptr<STTx const>
+    popAcctTransaction(std::shared_ptr<STTx const> const& tx);
 
     /** Get a ledger's hash by sequence number using the cache
      */
@@ -163,7 +174,7 @@ public:
     getHashBySeq(std::uint32_t index);
 
     /** Walk to a ledger's hash using the skip list */
-    boost::optional<LedgerHash>
+    std::optional<LedgerHash>
     walkHashBySeq(std::uint32_t index, InboundLedger::Reason reason);
 
     /** Walk the chain of ledger hashes to determine the hash of the
@@ -173,7 +184,7 @@ public:
         from the reference ledger or any prior ledger are not present
         in the node store.
     */
-    boost::optional<LedgerHash>
+    std::optional<LedgerHash>
     walkHashBySeq(
         std::uint32_t index,
         std::shared_ptr<ReadView const> const& referenceLedger,
@@ -188,10 +199,10 @@ public:
     void
     setLedgerRangePresent(std::uint32_t minV, std::uint32_t maxV);
 
-    boost::optional<NetClock::time_point>
+    std::optional<NetClock::time_point>
     getCloseTimeBySeq(LedgerIndex ledgerIndex);
 
-    boost::optional<NetClock::time_point>
+    std::optional<NetClock::time_point>
     getCloseTimeByHash(LedgerHash const& ledgerHash, LedgerIndex ledgerIndex);
 
     void
@@ -225,8 +236,6 @@ public:
         uint256 const& consensusHash,
         Json::Value consensus);
 
-    LedgerIndex
-    getBuildingLedger();
     void
     setBuildingLedger(LedgerIndex index);
 
@@ -241,11 +250,6 @@ public:
 
     bool
     fixIndex(LedgerIndex ledgerIndex, LedgerHash const& ledgerHash);
-    void
-    doLedgerCleaner(Json::Value const& parameters);
-
-    beast::PropertyStream::Source&
-    getPropertySource();
 
     void
     clearPriorLedgers(LedgerIndex seq);
@@ -266,7 +270,7 @@ public:
     void
     addFetchPack(uint256 const& hash, std::shared_ptr<Blob> data);
 
-    boost::optional<Blob>
+    std::optional<Blob>
     getFetchPack(uint256 const& hash) override;
 
     void
@@ -287,7 +291,7 @@ public:
     }
 
     // Returns the minimum ledger sequence in SQL database, if any.
-    boost::optional<LedgerIndex>
+    std::optional<LedgerIndex>
     minSqlSeq();
 
 private:
@@ -302,13 +306,11 @@ private:
     void
     getFetchPack(LedgerIndex missing, InboundLedger::Reason reason);
 
-    boost::optional<LedgerHash>
+    std::optional<LedgerHash>
     getLedgerHashForHistory(LedgerIndex index, InboundLedger::Reason reason);
 
     std::size_t
     getNeededValidations();
-    void
-    advanceThread();
     void
     fetchForHistory(
         std::uint32_t missing,
@@ -366,8 +368,6 @@ private:
 
     std::recursive_mutex mCompleteLock;
     RangeSet<std::uint32_t> mCompleteLedgers;
-
-    std::unique_ptr<detail::LedgerCleaner> mLedgerCleaner;
 
     // Publish thread is running.
     bool mAdvanceThread{false};

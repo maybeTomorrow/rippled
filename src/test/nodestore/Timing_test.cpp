@@ -18,6 +18,7 @@
 //==============================================================================
 
 #include <ripple/basics/BasicConfig.h>
+#include <ripple/basics/ByteUtilities.h>
 #include <ripple/basics/safe_cast.h>
 #include <ripple/beast/unit_test.h>
 #include <ripple/beast/utility/temp_dir.h>
@@ -47,6 +48,16 @@
 
 namespace ripple {
 namespace NodeStore {
+
+std::unique_ptr<Backend>
+make_Backend(
+    Section const& config,
+    Scheduler& scheduler,
+    beast::Journal journal)
+{
+    return Manager::instance().make_Backend(
+        config, megabytes(4), scheduler, journal);
+}
 
 // Fill memory with random bits
 template <class Generator>

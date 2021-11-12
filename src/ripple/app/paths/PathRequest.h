@@ -26,9 +26,9 @@
 #include <ripple/json/json_value.h>
 #include <ripple/net/InfoSub.h>
 #include <ripple/protocol/UintTypes.h>
-#include <boost/optional.hpp>
 #include <map>
 #include <mutex>
+#include <optional>
 #include <set>
 #include <utility>
 
@@ -49,12 +49,6 @@ class PathRequest : public std::enable_shared_from_this<PathRequest>,
                     public CountedObject<PathRequest>
 {
 public:
-    static char const*
-    getCountedObjectName()
-    {
-        return "PathRequest";
-    }
-
     using wptr = std::weak_ptr<PathRequest>;
     using pointer = std::shared_ptr<PathRequest>;
     using ref = const pointer&;
@@ -112,8 +106,6 @@ public:
 private:
     bool
     isValid(std::shared_ptr<RippleLineCache> const& crCache);
-    void
-    setValid();
 
     std::unique_ptr<Pathfinder> const&
     getPathFinder(
@@ -147,10 +139,10 @@ private:
     Json::Value jvStatus;  // Last result
 
     // Client request parameters
-    boost::optional<AccountID> raSrcAccount;
-    boost::optional<AccountID> raDstAccount;
+    std::optional<AccountID> raSrcAccount;
+    std::optional<AccountID> raDstAccount;
     STAmount saDstAmount;
-    boost::optional<STAmount> saSendMax;
+    std::optional<STAmount> saSendMax;
 
     std::set<Issue> sciSourceCurrencies;
     std::map<Issue, STPathSet> mContext;

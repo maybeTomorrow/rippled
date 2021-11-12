@@ -38,20 +38,6 @@ namespace ripple {
 // }
 
 static bool
-isHexTxID(std::string const& txid)
-{
-    if (txid.size() != 64)
-        return false;
-
-    auto const ret =
-        std::find_if(txid.begin(), txid.end(), [](std::string::value_type c) {
-            return !std::isxdigit(static_cast<unsigned char>(c));
-        });
-
-    return (ret == txid.end());
-}
-
-static bool
 isValidated(LedgerMaster& ledgerMaster, std::uint32_t seq, uint256 const& hash)
 {
     if (!ledgerMaster.haveLedger(seq))
@@ -63,32 +49,12 @@ isValidated(LedgerMaster& ledgerMaster, std::uint32_t seq, uint256 const& hash)
     return ledgerMaster.getHashBySeq(seq) == hash;
 }
 
-bool
-getMetaHex(Ledger const& ledger, uint256 const& transID, std::string& hex)
-{
-    SHAMapTreeNode::TNType type;
-    auto const item = ledger.txMap().peekItem(transID, type);
-
-    if (!item)
-        return false;
-
-    if (type != SHAMapTreeNode::tnTRANSACTION_MD)
-        return false;
-
-    SerialIter it(item->slice());
-    it.getVL();  // skip transaction
-    hex = strHex(makeSlice(it.getVL()));
-    return true;
-}
-
-enum class SearchedAll { no, yes, unknown };
-
 struct TxResult
 {
     Transaction::pointer txn;
     std::variant<std::shared_ptr<TxMeta>, Blob> meta;
     bool validated = false;
-    SearchedAll searchedAll;
+    TxSearched searchedAll;
 };
 
 struct TxArgs
@@ -99,8 +65,113 @@ struct TxArgs
 };
 
 std::pair<TxResult, RPC::Status>
+doTxPostgres(RPC::Context& context, TxArgs const& args)
+{
+    if (!context.app.config().reporting())
+    {
+        assert(false);
+        Throw<std::runtime_error>(
+            "Called doTxPostgres yet not in reporting mode");
+    }
+    TxResult res;
+    res.searchedAll = TxSearched::unknown;
+
+    JLOG(context.j.debug()) << "Fetching from postgres";
+    Transaction::Locator locator = Transaction::locate(args.hash, context.app);
+
+    std::pair<std::shared_ptr<STTx const>, std::shared_ptr<STObject const>>
+        pair;
+    // database returned the nodestore hash. Fetch the txn directly from the
+    // nodestore. Don't traverse the transaction SHAMap
+    if (locator.isFound())
+    {
+        auto start = std::chrono::system_clock::now();
+        // The second argument of fetch is ignored when not using shards
+        if (auto obj = context.app.getNodeFamily().db().fetchNodeObject(
+                locator.getNodestoreHash(), locator.getLedgerSequence()))
+        {
+            auto node = SHAMapTreeNode::makeFromPrefix(
+                makeSlice(obj->getData()),
+                SHAMapHash{locator.getNodestoreHash()});
+            if (!node)
+            {
+                assert(false);
+                return {res, {rpcINTERNAL, "Error making SHAMap node"}};
+            }
+            auto item = (static_cast<SHAMapLeafNode*>(node.get()))->peekItem();
+            if (!item)
+            {
+                assert(false);
+                return {res, {rpcINTERNAL, "Error reading SHAMap node"}};
+            }
+
+            auto [sttx, meta] = deserializeTxPlusMeta(*item);
+            JLOG(context.j.debug()) << "Successfully fetched from db";
+
+            if (!sttx || !meta)
+            {
+                assert(false);
+                return {res, {rpcINTERNAL, "Error deserializing SHAMap node"}};
+            }
+            std::string reason;
+            res.txn = std::make_shared<Transaction>(sttx, reason, context.app);
+            res.txn->setLedger(locator.getLedgerSequence());
+            res.txn->setStatus(COMMITTED);
+            if (args.binary)
+            {
+                SerialIter it(item->slice());
+                it.skip(it.getVLDataLength());  // skip transaction
+                Blob blob = it.getVL();
+                res.meta = std::move(blob);
+            }
+            else
+            {
+                res.meta = std::make_shared<TxMeta>(
+                    args.hash, res.txn->getLedger(), *meta);
+            }
+            res.validated = true;
+            return {res, rpcSUCCESS};
+        }
+        else
+        {
+            JLOG(context.j.error()) << "Failed to fetch from db";
+            assert(false);
+            return {res, {rpcINTERNAL, "Containing SHAMap node not found"}};
+        }
+        auto end = std::chrono::system_clock::now();
+        JLOG(context.j.debug()) << "tx flat fetch time : "
+                                << ((end - start).count() / 1000000000.0);
+    }
+    // database did not find the transaction, and returned the ledger range
+    // that was searched
+    else
+    {
+        if (args.ledgerRange)
+        {
+            auto range = locator.getLedgerRangeSearched();
+            auto min = args.ledgerRange->first;
+            auto max = args.ledgerRange->second;
+            if (min >= range.lower() && max <= range.upper())
+            {
+                res.searchedAll = TxSearched::all;
+            }
+            else
+            {
+                res.searchedAll = TxSearched::some;
+            }
+        }
+        return {res, rpcTXN_NOT_FOUND};
+    }
+    // database didn't return anything. This shouldn't happen
+    assert(false);
+    return {res, {rpcINTERNAL, "unexpected Postgres response"}};
+}
+
+std::pair<TxResult, RPC::Status>
 doTxHelp(RPC::Context& context, TxArgs const& args)
 {
+    if (context.app.config().reporting())
+        return doTxPostgres(context, args);
     TxResult result;
 
     ClosedInterval<uint32_t> range;
@@ -119,30 +190,30 @@ doTxHelp(RPC::Context& context, TxArgs const& args)
             args.ledgerRange->first, args.ledgerRange->second);
     }
 
-    std::shared_ptr<Transaction> txn;
     auto ec{rpcSUCCESS};
 
-    result.searchedAll = SearchedAll::unknown;
+    using TxPair =
+        std::pair<std::shared_ptr<Transaction>, std::shared_ptr<TxMeta>>;
+
+    result.searchedAll = TxSearched::unknown;
+
+    std::variant<TxPair, TxSearched> v;
     if (args.ledgerRange)
     {
-        boost::variant<std::shared_ptr<Transaction>, bool> v =
-            context.app.getMasterTransaction().fetch(args.hash, range, ec);
-
-        if (v.which() == 1)
-        {
-            result.searchedAll =
-                boost::get<bool>(v) ? SearchedAll::yes : SearchedAll::no;
-            return {result, rpcTXN_NOT_FOUND};
-        }
-        else
-        {
-            txn = boost::get<std::shared_ptr<Transaction>>(v);
-        }
+        v = context.app.getMasterTransaction().fetch(args.hash, range, ec);
     }
     else
     {
-        txn = context.app.getMasterTransaction().fetch(args.hash, ec);
+        v = context.app.getMasterTransaction().fetch(args.hash, ec);
     }
+
+    if (auto e = std::get_if<TxSearched>(&v))
+    {
+        result.searchedAll = *e;
+        return {result, rpcTXN_NOT_FOUND};
+    }
+
+    auto [txn, meta] = std::get<TxPair>(v);
 
     if (ec == rpcDB_DESERIALIZATION)
     {
@@ -162,39 +233,19 @@ doTxHelp(RPC::Context& context, TxArgs const& args)
 
     std::shared_ptr<Ledger const> ledger =
         context.ledgerMaster.getLedgerBySeq(txn->getLedger());
-    // get meta data
-    if (ledger)
+
+    if (ledger && meta)
     {
-        bool ok = false;
         if (args.binary)
         {
-            SHAMapTreeNode::TNType type;
-            auto const item = ledger->txMap().peekItem(txn->getID(), type);
-
-            if (item && type == SHAMapTreeNode::tnTRANSACTION_MD)
-            {
-                ok = true;
-                SerialIter it(item->slice());
-                it.skip(it.getVLDataLength());  // skip transaction
-                Blob blob = it.getVL();
-                result.meta = std::move(blob);
-            }
+            result.meta = meta->getAsObject().getSerializer().getData();
         }
         else
         {
-            auto rawMeta = ledger->txRead(txn->getID()).second;
-            if (rawMeta)
-            {
-                ok = true;
-                result.meta = std::make_shared<TxMeta>(
-                    txn->getID(), ledger->seq(), *rawMeta);
-            }
+            result.meta = meta;
         }
-        if (ok)
-        {
-            result.validated = isValidated(
-                context.ledgerMaster, ledger->info().seq, ledger->info().hash);
-        }
+        result.validated = isValidated(
+            context.ledgerMaster, ledger->info().seq, ledger->info().hash);
     }
 
     return {result, rpcSUCCESS};
@@ -214,14 +265,14 @@ populateProtoResponse(
     if (error.toErrorCode() != rpcSUCCESS)
     {
         if (error.toErrorCode() == rpcTXN_NOT_FOUND &&
-            result.searchedAll != SearchedAll::unknown)
+            result.searchedAll != TxSearched::unknown)
         {
             status = {
                 grpc::StatusCode::NOT_FOUND,
                 "txn not found. searched_all = " +
                     to_string(
-                        (result.searchedAll == SearchedAll::yes ? "true"
-                                                                : "false"))};
+                        (result.searchedAll == TxSearched::all ? "true"
+                                                               : "false"))};
         }
         else
         {
@@ -308,11 +359,11 @@ populateJsonResponse(
     if (error.toErrorCode() != rpcSUCCESS)
     {
         if (error.toErrorCode() == rpcTXN_NOT_FOUND &&
-            result.searchedAll != SearchedAll::unknown)
+            result.searchedAll != TxSearched::unknown)
         {
             response = Json::Value(Json::objectValue);
             response[jss::searched_all] =
-                (result.searchedAll == SearchedAll::yes);
+                (result.searchedAll == TxSearched::all);
             error.inject(response);
         }
         else
@@ -350,17 +401,18 @@ populateJsonResponse(
 Json::Value
 doTxJson(RPC::JsonContext& context)
 {
+    if (!context.app.config().useTxTables())
+        return rpcError(rpcNOT_ENABLED);
+
     // Deserialize and validate JSON arguments
 
     if (!context.params.isMember(jss::transaction))
         return rpcError(rpcINVALID_PARAMS);
 
-    std::string txHash = context.params[jss::transaction].asString();
-    if (!isHexTxID(txHash))
-        return rpcError(rpcNOT_IMPL);
-
     TxArgs args;
-    args.hash = from_hex_text<uint256>(txHash);
+
+    if (!args.hash.parseHex(context.params[jss::transaction].asString()))
+        return rpcError(rpcNOT_IMPL);
 
     args.binary = context.params.isMember(jss::binary) &&
         context.params[jss::binary].asBool();
@@ -388,6 +440,13 @@ doTxJson(RPC::JsonContext& context)
 std::pair<org::xrpl::rpc::v1::GetTransactionResponse, grpc::Status>
 doTxGrpc(RPC::GRPCContext<org::xrpl::rpc::v1::GetTransactionRequest>& context)
 {
+    if (!context.app.config().useTxTables())
+    {
+        return {
+            {},
+            {grpc::StatusCode::UNIMPLEMENTED, "Not enabled in configuration."}};
+    }
+
     // return values
     org::xrpl::rpc::v1::GetTransactionResponse response;
     grpc::Status status = grpc::Status::OK;
@@ -397,12 +456,14 @@ doTxGrpc(RPC::GRPCContext<org::xrpl::rpc::v1::GetTransactionRequest>& context)
 
     TxArgs args;
 
-    std::string const& hashBytes = request.hash();
-    args.hash = uint256::fromVoid(hashBytes.data());
-    if (args.hash.size() != hashBytes.size())
+    if (auto hash = uint256::fromVoidChecked(request.hash()))
+    {
+        args.hash = *hash;
+    }
+    else
     {
         grpc::Status errorStatus{
-            grpc::StatusCode::INVALID_ARGUMENT, "ledger hash malformed"};
+            grpc::StatusCode::INVALID_ARGUMENT, "tx hash malformed"};
         return {response, errorStatus};
     }
 

@@ -24,8 +24,8 @@
 #include <ripple/core/Config.h>
 #include <ripple/core/SociDB.h>
 #include <boost/filesystem/path.hpp>
-#include <boost/optional.hpp>
 #include <mutex>
+#include <optional>
 #include <string>
 
 namespace soci {
@@ -87,6 +87,7 @@ public:
 
         Config::StartUpType startUp = Config::NORMAL;
         bool standAlone = false;
+        bool reporting = false;
         boost::filesystem::path dataDir;
         // Indicates whether or not to return the `globalPragma`
         // from commonPragma()
@@ -117,7 +118,8 @@ public:
         std::array<char const*, M> const& initSQL)
         // Use temporary files or regular DB files?
         : DatabaseCon(
-              setup.standAlone && setup.startUp != Config::LOAD &&
+              setup.standAlone && !setup.reporting &&
+                      setup.startUp != Config::LOAD &&
                       setup.startUp != Config::LOAD_FILE &&
                       setup.startUp != Config::REPLAY
                   ? ""
@@ -232,7 +234,7 @@ checkpointerFromId(std::uintptr_t id);
 DatabaseCon::Setup
 setup_DatabaseCon(
     Config const& c,
-    boost::optional<beast::Journal> j = boost::none);
+    std::optional<beast::Journal> j = std::nullopt);
 
 }  // namespace ripple
 

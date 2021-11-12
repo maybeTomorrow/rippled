@@ -176,7 +176,7 @@ class AccountTx_test : public beast::unit_test::suite
             p[jss::ledger_index_max] = 1;
             BEAST_EXPECT(isErr(
                 env.rpc("json", "account_tx", to_string(p)),
-                (RPC::ApiMaximumSupportedVersion == 1 ? rpcLGR_IDXS_INVALID
+                (RPC::apiMaximumSupportedVersion == 1 ? rpcLGR_IDXS_INVALID
                                                       : rpcINVALID_LGR_RANGE)));
         }
 
@@ -192,7 +192,7 @@ class AccountTx_test : public beast::unit_test::suite
             p[jss::ledger_index_min] = env.current()->info().seq;
             BEAST_EXPECT(isErr(
                 env.rpc("json", "account_tx", to_string(p)),
-                (RPC::ApiMaximumSupportedVersion == 1 ? rpcLGR_IDXS_INVALID
+                (RPC::apiMaximumSupportedVersion == 1 ? rpcLGR_IDXS_INVALID
                                                       : rpcINVALID_LGR_RANGE)));
         }
 
@@ -277,13 +277,7 @@ class AccountTx_test : public beast::unit_test::suite
         env(offer(alice, USD(50), XRP(150)), sig(alie));
         env.close();
 
-        {
-            Json::Value cancelOffer;
-            cancelOffer[jss::Account] = alice.human();
-            cancelOffer[jss::OfferSequence] = offerSeq;
-            cancelOffer[jss::TransactionType] = jss::OfferCancel;
-            env(cancelOffer, sig(alie));
-        }
+        env(offer_cancel(alice, offerSeq), sig(alie));
         env.close();
 
         // SignerListSet
@@ -368,7 +362,7 @@ class AccountTx_test : public beast::unit_test::suite
                 payChanFund[jss::TransactionType] = jss::PaymentChannelFund;
                 payChanFund[jss::Flags] = tfUniversal;
                 payChanFund[jss::Account] = alice.human();
-                payChanFund[sfPayChannel.jsonName] = payChanIndex;
+                payChanFund[sfChannel.jsonName] = payChanIndex;
                 payChanFund[jss::Amount] =
                     XRP(200).value().getJson(JsonOptions::none);
                 env(payChanFund, sig(alie));
@@ -379,7 +373,7 @@ class AccountTx_test : public beast::unit_test::suite
                 payChanClaim[jss::TransactionType] = jss::PaymentChannelClaim;
                 payChanClaim[jss::Flags] = tfClose;
                 payChanClaim[jss::Account] = gw.human();
-                payChanClaim[sfPayChannel.jsonName] = payChanIndex;
+                payChanClaim[sfChannel.jsonName] = payChanIndex;
                 payChanClaim[sfPublicKey.jsonName] = strHex(alice.pk().slice());
                 env(payChanClaim);
                 env.close();
@@ -399,10 +393,15 @@ class AccountTx_test : public beast::unit_test::suite
             env(check::cancel(alice, aliceCheckId), sig(alie));
             env.close();
         }
+        {
+            // Deposit preauthorization with a Ticket.
+            std::uint32_t const tktSeq{env.seq(alice) + 1};
+            env(ticket::create(alice, 1), sig(alie));
+            env.close();
 
-        // Deposit preauthorization.
-        env(deposit::auth(alice, gw), sig(alie));
-        env.close();
+            env(deposit::auth(alice, gw), ticket::use(tktSeq), sig(alie));
+            env.close();
+        }
 
         // Setup is done.  Look at the transactions returned by account_tx.
         Json::Value params;
@@ -423,27 +422,28 @@ class AccountTx_test : public beast::unit_test::suite
         // be returned in the reverse order of application to the ledger.
         static const NodeSanity sanity[]{
             //    txType,                    created,                                                    deleted,                          modified
-            {  0, jss::DepositPreauth,       {jss::DepositPreauth},                                      {},                               {jss::AccountRoot, jss::DirectoryNode}},
-            {  1, jss::CheckCancel,          {},                                                         {jss::Check},                     {jss::AccountRoot, jss::AccountRoot, jss::DirectoryNode, jss::DirectoryNode}},
-            {  2, jss::CheckCash,            {},                                                         {jss::Check},                     {jss::AccountRoot, jss::AccountRoot, jss::DirectoryNode, jss::DirectoryNode}},
-            {  3, jss::CheckCreate,          {jss::Check},                                               {},                               {jss::AccountRoot, jss::AccountRoot, jss::DirectoryNode, jss::DirectoryNode}},
-            {  4, jss::CheckCreate,          {jss::Check},                                               {},                               {jss::AccountRoot, jss::AccountRoot, jss::DirectoryNode, jss::DirectoryNode}},
-            {  5, jss::PaymentChannelClaim,  {},                                                         {jss::PayChannel},                {jss::AccountRoot, jss::AccountRoot,   jss::DirectoryNode, jss::DirectoryNode}},
-            {  6, jss::PaymentChannelFund,   {},                                                         {},                               {jss::AccountRoot, jss::PayChannel   }},
-            {  7, jss::PaymentChannelCreate, {jss::PayChannel},                                          {},                               {jss::AccountRoot, jss::AccountRoot,   jss::DirectoryNode, jss::DirectoryNode}},
-            {  8, jss::EscrowCancel,         {},                                                         {jss::Escrow},                    {jss::AccountRoot, jss::DirectoryNode}},
-            {  9, jss::EscrowFinish,         {},                                                         {jss::Escrow},                    {jss::AccountRoot, jss::DirectoryNode}},
-            { 10, jss::EscrowCreate,         {jss::Escrow},                                              {},                               {jss::AccountRoot, jss::DirectoryNode}},
-            { 11, jss::EscrowCreate,         {jss::Escrow},                                              {},                               {jss::AccountRoot, jss::DirectoryNode}},
-            { 12, jss::SignerListSet,        {jss::SignerList},                                          {},                               {jss::AccountRoot, jss::DirectoryNode}},
-            { 13, jss::OfferCancel,          {},                                                         {jss::Offer, jss::DirectoryNode}, {jss::AccountRoot, jss::DirectoryNode}},
-            { 14, jss::OfferCreate,          {jss::Offer, jss::DirectoryNode},                           {},                               {jss::AccountRoot, jss::DirectoryNode}},
-            { 15, jss::TrustSet,             {jss::RippleState, jss::DirectoryNode, jss::DirectoryNode}, {},                               {jss::AccountRoot, jss::AccountRoot}},
-            { 16, jss::SetRegularKey,        {},                                                         {},                               {jss::AccountRoot}},
-            { 17, jss::Payment,              {},                                                         {},                               {jss::AccountRoot, jss::AccountRoot}},
-            { 18, jss::AccountSet,           {},                                                         {},                               {jss::AccountRoot}},
-            { 19, jss::AccountSet,           {},                                                         {},                               {jss::AccountRoot}},
-            { 20, jss::Payment,              {jss::AccountRoot},                                         {},                               {jss::AccountRoot}},
+            {0,  jss::DepositPreauth,         {jss::DepositPreauth},                                      {jss::Ticket},                    {jss::AccountRoot, jss::DirectoryNode}},
+            {1,  jss::TicketCreate,           {jss::Ticket},                                              {},                               {jss::AccountRoot, jss::DirectoryNode}},
+            {2,  jss::CheckCancel,            {},                                                         {jss::Check},                     {jss::AccountRoot, jss::AccountRoot, jss::DirectoryNode, jss::DirectoryNode}},
+            {3,  jss::CheckCash,              {},                                                         {jss::Check},                     {jss::AccountRoot, jss::AccountRoot, jss::DirectoryNode, jss::DirectoryNode}},
+            {4,  jss::CheckCreate,            {jss::Check},                                               {},                               {jss::AccountRoot, jss::AccountRoot, jss::DirectoryNode, jss::DirectoryNode}},
+            {5,  jss::CheckCreate,            {jss::Check},                                               {},                               {jss::AccountRoot, jss::AccountRoot, jss::DirectoryNode, jss::DirectoryNode}},
+            {6,  jss::PaymentChannelClaim,    {},                                                         {jss::PayChannel},                {jss::AccountRoot, jss::AccountRoot, jss::DirectoryNode, jss::DirectoryNode}},
+            {7,  jss::PaymentChannelFund,     {},                                                         {},                               {jss::AccountRoot, jss::PayChannel}},
+            {8,  jss::PaymentChannelCreate,   {jss::PayChannel},                                          {},                               {jss::AccountRoot, jss::AccountRoot, jss::DirectoryNode, jss::DirectoryNode}},
+            {9,  jss::EscrowCancel,           {},                                                         {jss::Escrow},                    {jss::AccountRoot, jss::DirectoryNode}},
+            {10, jss::EscrowFinish,           {},                                                         {jss::Escrow},                    {jss::AccountRoot, jss::DirectoryNode}},
+            {11, jss::EscrowCreate,           {jss::Escrow},                                              {},                               {jss::AccountRoot, jss::DirectoryNode}},
+            {12, jss::EscrowCreate,           {jss::Escrow},                                              {},                               {jss::AccountRoot, jss::DirectoryNode}},
+            {13, jss::SignerListSet,          {jss::SignerList},                                          {},                               {jss::AccountRoot, jss::DirectoryNode}},
+            {14, jss::OfferCancel,            {},                                                         {jss::Offer, jss::DirectoryNode}, {jss::AccountRoot, jss::DirectoryNode}},
+            {15, jss::OfferCreate,            {jss::Offer, jss::DirectoryNode},                           {},                               {jss::AccountRoot, jss::DirectoryNode}},
+            {16, jss::TrustSet,               {jss::RippleState, jss::DirectoryNode, jss::DirectoryNode}, {},                               {jss::AccountRoot, jss::AccountRoot}},
+            {17, jss::SetRegularKey,          {},                                                         {},                               {jss::AccountRoot}},
+            {18, jss::Payment,                {},                                                         {},                               {jss::AccountRoot, jss::AccountRoot}},
+            {19, jss::AccountSet,             {},                                                         {},                               {jss::AccountRoot}},
+            {20, jss::AccountSet,             {},                                                         {},                               {jss::AccountRoot}},
+            {21, jss::Payment,                {jss::AccountRoot},                                         {},                               {jss::AccountRoot}},
         };
         // clang-format on
 

@@ -28,68 +28,17 @@ namespace ripple {
 std::string
 toBase58(AccountID const& v)
 {
-    return base58EncodeToken(TokenType::AccountID, v.data(), v.size());
+    return encodeBase58Token(TokenType::AccountID, v.data(), v.size());
 }
 
 template <>
-boost::optional<AccountID>
+std::optional<AccountID>
 parseBase58(std::string const& s)
 {
     auto const result = decodeBase58Token(s, TokenType::AccountID);
-    if (result.empty())
-        return boost::none;
-    AccountID id;
-    if (result.size() != id.size())
-        return boost::none;
-    std::memcpy(id.data(), result.data(), result.size());
-    return id;
-}
-
-boost::optional<AccountID>
-deprecatedParseBitcoinAccountID(std::string const& s)
-{
-    auto const result = decodeBase58TokenBitcoin(s, TokenType::AccountID);
-    if (result.empty())
-        return boost::none;
-    AccountID id;
-    if (result.size() != id.size())
-        return boost::none;
-    std::memcpy(id.data(), result.data(), result.size());
-    return id;
-}
-
-bool
-deprecatedParseBase58(AccountID& account, Json::Value const& jv)
-{
-    if (!jv.isString())
-        return false;
-    auto const result = parseBase58<AccountID>(jv.asString());
-    if (!result)
-        return false;
-    account = *result;
-    return true;
-}
-
-template <>
-boost::optional<AccountID>
-parseHex(std::string const& s)
-{
-    if (s.size() != 40)
-        return boost::none;
-    AccountID id;
-    if (!id.SetHex(s, true))
-        return boost::none;
-    return id;
-}
-
-template <>
-boost::optional<AccountID>
-parseHexOrBase58(std::string const& s)
-{
-    auto result = parseHex<AccountID>(s);
-    if (!result)
-        result = parseBase58<AccountID>(s);
-    return result;
+    if (result.size() != AccountID::bytes)
+        return std::nullopt;
+    return AccountID{result};
 }
 
 //------------------------------------------------------------------------------
@@ -130,13 +79,11 @@ parseHexOrBase58(std::string const& s)
 AccountID
 calcAccountID(PublicKey const& pk)
 {
+    static_assert(AccountID::bytes == sizeof(ripesha_hasher::result_type));
+
     ripesha_hasher rsh;
     rsh(pk.data(), pk.size());
-    auto const d = static_cast<ripesha_hasher::result_type>(rsh);
-    AccountID id;
-    static_assert(sizeof(d) == id.size(), "");
-    std::memcpy(id.data(), d.data(), d.size());
-    return id;
+    return AccountID{static_cast<ripesha_hasher::result_type>(rsh)};
 }
 
 AccountID const&
@@ -156,11 +103,8 @@ noAccount()
 bool
 to_issuer(AccountID& issuer, std::string const& s)
 {
-    if (s.size() == (160 / 4))
-    {
-        issuer.SetHex(s);
+    if (issuer.parseHex(s))
         return true;
-    }
     auto const account = parseBase58<AccountID>(s);
     if (!account)
         return false;

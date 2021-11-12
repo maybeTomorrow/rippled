@@ -20,6 +20,7 @@
 #ifndef RIPPLE_CORE_JOB_H_INCLUDED
 #define RIPPLE_CORE_JOB_H_INCLUDED
 
+#include <ripple/core/ClosureCounter.h>
 #include <ripple/core/LoadMonitor.h>
 #include <functional>
 
@@ -42,13 +43,17 @@ enum JobType {
     jtPUBOLDLEDGER,   // An old ledger has been accepted
     jtVALIDATION_ut,  // A validation from an untrusted source
     jtTRANSACTION_l,  // A local transaction
+    jtREPLAY_REQ,     // Peer request a ledger delta or a skip list
     jtLEDGER_REQ,     // Peer request ledger/txnset data
     jtPROPOSAL_ut,    // A proposal from an untrusted source
+    jtREPLAY_TASK,    // A Ledger replay task/subtask
     jtLEDGER_DATA,    // Received data for a ledger we're acquiring
     jtCLIENT,         // A websocket command from the client
     jtRPC,            // A websocket command from the client
     jtUPDATE_PF,      // Update pathfinding requests
     jtTRANSACTION,    // A transaction received from the network
+    jtMISSING_TXN,    // Request missing transactions
+    jtREQUESTED_TXN,  // Reply with requested transactions
     jtBATCH,          // Apply batched transactions
     jtADVANCE,        // Advance validated/acquired ledgers
     jtPUBLEDGER,      // Publish a fully-accepted ledger
@@ -154,6 +159,8 @@ private:
     std::string mName;
     clock_type::time_point m_queue_time;
 };
+
+using JobCounter = ClosureCounter<void, Job&>;
 
 }  // namespace ripple
 

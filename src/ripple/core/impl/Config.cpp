@@ -19,6 +19,7 @@
 
 #include <ripple/basics/FileUtilities.h>
 #include <ripple/basics/Log.h>
+#include <ripple/basics/StringUtilities.h>
 #include <ripple/basics/contract.h>
 #include <ripple/beast/core/LexicalCast.h>
 #include <ripple/core/Config.h>
@@ -28,35 +29,106 @@
 #include <ripple/protocol/Feature.h>
 #include <ripple/protocol/SystemParameters.h>
 #include <boost/algorithm/string.hpp>
-#include <boost/beast/core/string.hpp>
 #include <boost/format.hpp>
+#include <boost/predef.h>
 #include <boost/regex.hpp>
 #include <boost/system/error_code.hpp>
 #include <algorithm>
-#include <fstream>
+#include <cstdlib>
 #include <iostream>
 #include <iterator>
+#include <thread>
+
+#if BOOST_OS_WINDOWS
+#include <sysinfoapi.h>
+
+namespace ripple {
+namespace detail {
+
+[[nodiscard]] std::uint64_t
+getMemorySize()
+{
+    if (MEMORYSTATUSEX msx{sizeof(MEMORYSTATUSEX)}; GlobalMemoryStatusEx(&msx))
+        return static_cast<std::uint64_t>(msx.ullTotalPhys);
+
+    return 0;
+}
+
+}  // namespace detail
+}  // namespace ripple
+#endif
+
+#if BOOST_OS_LINUX
+#include <sys/sysinfo.h>
+
+namespace ripple {
+namespace detail {
+
+[[nodiscard]] std::uint64_t
+getMemorySize()
+{
+    struct sysinfo si;
+
+    if (sysinfo(&si) == 0)
+        return static_cast<std::uint64_t>(si.totalram);
+
+    return 0;
+}
+
+}  // namespace detail
+}  // namespace ripple
+
+#endif
+
+#if BOOST_OS_MACOS
+#include <sys/sysctl.h>
+#include <sys/types.h>
+
+namespace ripple {
+namespace detail {
+
+[[nodiscard]] std::uint64_t
+getMemorySize()
+{
+    int mib[] = {CTL_HW, HW_MEMSIZE};
+    std::int64_t ram = 0;
+    size_t size = sizeof(ram);
+
+    if (sysctl(mib, 2, &ram, &size, NULL, 0) == 0)
+        return static_cast<std::uint64_t>(ram);
+
+    return 0;
+}
+
+}  // namespace detail
+}  // namespace ripple
+#endif
 
 namespace ripple {
 
-inline constexpr std::array<std::pair<SizedItem, std::array<int, 5>>, 11>
-    sizedItems{{
-        // FIXME: We should document each of these items, explaining exactly
-        // what
-        //        they control and whether there exists an explicit config
-        //        option that can be used to override the default.
-        {SizedItem::sweepInterval, {{10, 30, 60, 90, 120}}},
-        {SizedItem::treeCacheSize, {{128000, 256000, 512000, 768000, 2048000}}},
-        {SizedItem::treeCacheAge, {{30, 60, 90, 120, 900}}},
-        {SizedItem::ledgerSize, {{32, 128, 256, 384, 768}}},
-        {SizedItem::ledgerAge, {{30, 90, 180, 240, 900}}},
-        {SizedItem::ledgerFetch, {{2, 3, 4, 5, 8}}},
-        {SizedItem::nodeCacheSize, {{16384, 32768, 131072, 262144, 524288}}},
-        {SizedItem::nodeCacheAge, {{60, 90, 120, 900, 1800}}},
-        {SizedItem::hashNodeDBCache, {{4, 12, 24, 64, 128}}},
-        {SizedItem::txnDBCache, {{4, 12, 24, 64, 128}}},
-        {SizedItem::lgrDBCache, {{4, 8, 16, 32, 128}}},
-    }};
+// clang-format off
+// The configurable node sizes are "tiny", "small", "medium", "large", "huge"
+inline constexpr std::array<std::pair<SizedItem, std::array<int, 5>>, 12>
+sizedItems
+{{
+    // FIXME: We should document each of these items, explaining exactly
+    //        what they control and whether there exists an explicit
+    //        config option that can be used to override the default.
+
+    //                                tiny    small   medium    large      huge
+    {SizedItem::sweepInterval,   {{     10,      30,      60,      90,      120 }}},
+    {SizedItem::treeCacheSize,   {{ 128000,  256000,  512000,  768000,  2048000 }}},
+    {SizedItem::treeCacheAge,    {{     30,      60,      90,     120,      900 }}},
+    {SizedItem::ledgerSize,      {{     32,     128,     256,     384,      768 }}},
+    {SizedItem::ledgerAge,       {{     30,      90,     180,     240,      900 }}},
+    {SizedItem::ledgerFetch,     {{      2,       3,       4,       5,        8 }}},
+    {SizedItem::hashNodeDBCache, {{      4,      12,      24,      64,      128 }}},
+    {SizedItem::txnDBCache,      {{      4,      12,      24,      64,      128 }}},
+    {SizedItem::lgrDBCache,      {{      4,       8,      16,      32,      128 }}},
+    {SizedItem::openFinalLimit,  {{      8,      16,      32,      64,      128 }}},
+    {SizedItem::burstSize,       {{      4,       8,      16,      32,       48 }}},
+    {SizedItem::ramSizeGB,       {{      8,      12,      16,      24,       32 }}},
+}};
 
 // Ensure that the order of entries in the table corresponds to the
 // order of entries in the enum:
@@ -75,6 +147,7 @@ static_assert(
         return true;
     }(),
     "Mismatch between sized item enum & array indices");
+// clang-format on
 
 //
 // TODO: Check permissions on config file before using it.
@@ -178,14 +251,12 @@ char const* const Config::configFileName = "rippled.cfg";
 char const* const Config::databaseDirName = "db";
 char const* const Config::validatorsFileName = "validators.txt";
 
-static std::string
+[[nodiscard]] static std::string
 getEnvVar(char const* name)
 {
     std::string value;
 
-    auto const v = getenv(name);
-
-    if (v != nullptr)
+    if (auto const v = std::getenv(name); v != nullptr)
         value = v;
 
     return value;
@@ -193,12 +264,51 @@ getEnvVar(char const* name)
 
 constexpr FeeUnit32 Config::TRANSACTION_FEE_BASE;
 
+Config::Config()
+    : j_(beast::Journal::getNullSink()), ramSize_(detail::getMemorySize())
+{
+}
+
 void
 Config::setupControl(bool bQuiet, bool bSilent, bool bStandalone)
 {
+    assert(NODE_SIZE == 0);
+
     QUIET = bQuiet || bSilent;
     SILENT = bSilent;
     RUN_STANDALONE = bStandalone;
+
+    // We try to autodetect the appropriate node size by checking available
+    // RAM and CPU resources. We default to "tiny" for standalone mode.
+    if (!bStandalone)
+    {
+        // First, check against 'minimum' RAM requirements per node size:
+        auto const& threshold =
+            sizedItems[std::underlying_type_t<SizedItem>(SizedItem::ramSizeGB)];
+
+        auto ns = std::find_if(
+            threshold.second.begin(),
+            threshold.second.end(),
+            [this](std::size_t limit) {
+                return (ramSize_ / (1024 * 1024 * 1024)) < limit;
+            });
+
+        if (ns != threshold.second.end())
+            NODE_SIZE = std::distance(threshold.second.begin(), ns);
+
+        // Adjust the size based on the number of hardware threads of
+        // execution available to us:
+        if (auto const hc = std::thread::hardware_concurrency())
+        {
+            if (hc == 1)
+                NODE_SIZE = 0;
+
+            if (hc < 4)
+                NODE_SIZE = std::min<std::size_t>(NODE_SIZE, 1);
+        }
+    }
+
+    assert(NODE_SIZE <= 4);
 }
 
 void
@@ -242,9 +352,9 @@ Config::setup(
 
         // Construct XDG config and data home.
         // http://standards.freedesktop.org/basedir-spec/basedir-spec-latest.html
-        std::string strHome = getEnvVar("HOME");
-        std::string strXdgConfigHome = getEnvVar("XDG_CONFIG_HOME");
-        std::string strXdgDataHome = getEnvVar("XDG_DATA_HOME");
+        auto const strHome = getEnvVar("HOME");
+        auto strXdgConfigHome = getEnvVar("XDG_CONFIG_HOME");
+        auto strXdgDataHome = getEnvVar("XDG_DATA_HOME");
 
         if (boost::filesystem::exists(CONFIG_FILE)
             // Can we figure out XDG dirs?
@@ -282,6 +392,11 @@ Config::setup(
 
     // Update default values
     load();
+    if (exists("reporting"))
+    {
+        RUN_REPORTING = true;
+        RUN_STANDALONE = true;
+    }
     {
         // load() may have set a new value for the dataDir
         std::string const dbPath(legacy("database_path"));
@@ -307,6 +422,10 @@ Config::setup(
 
     if (RUN_STANDALONE)
         LEDGER_HISTORY = 0;
+
+    std::string ledgerTxDbType;
+    Section ledgerTxTablesSection = section("ledger_tx_tables");
+    get_if_exists(ledgerTxTablesSection, "use_tx_tables", USE_TX_TABLES);
 }
 
 void
@@ -362,7 +481,45 @@ Config::loadFromString(std::string const& fileContents)
         PEER_PRIVATE = beast::lexicalCastThrow<bool>(strTemp);
 
     if (getSingleSection(secConfig, SECTION_PEERS_MAX, strTemp, j_))
+    {
         PEERS_MAX = beast::lexicalCastThrow<std::size_t>(strTemp);
+    }
+    else
+    {
+        std::optional<std::size_t> peers_in_max{};
+        if (getSingleSection(secConfig, SECTION_PEERS_IN_MAX, strTemp, j_))
+        {
+            peers_in_max = beast::lexicalCastThrow<std::size_t>(strTemp);
+            if (*peers_in_max > 1000)
+                Throw<std::runtime_error>(
+                    "Invalid value specified in [" SECTION_PEERS_IN_MAX
+                    "] section; the value must be less or equal than 1000");
+        }
+
+        std::optional<std::size_t> peers_out_max{};
+        if (getSingleSection(secConfig, SECTION_PEERS_OUT_MAX, strTemp, j_))
+        {
+            peers_out_max = beast::lexicalCastThrow<std::size_t>(strTemp);
+            if (*peers_out_max < 10 || *peers_out_max > 1000)
+                Throw<std::runtime_error>(
+                    "Invalid value specified in [" SECTION_PEERS_OUT_MAX
+                    "] section; the value must be in range 10-1000");
+        }
+
+        // if one section is configured then the other must be configured too
+        if ((peers_in_max && !peers_out_max) ||
+            (peers_out_max && !peers_in_max))
+            Throw<std::runtime_error>("Both sections [" SECTION_PEERS_IN_MAX
+                                      "]"
+                                      "and [" SECTION_PEERS_OUT_MAX
+                                      "] must be configured");
+
+        if (peers_in_max && peers_out_max)
+        {
+            PEERS_IN_MAX = *peers_in_max;
+            PEERS_OUT_MAX = *peers_out_max;
+        }
+    }
 
     if (getSingleSection(secConfig, SECTION_NODE_SIZE, strTemp, j_))
     {
@@ -386,10 +543,6 @@ Config::loadFromString(std::string const& fileContents)
 
     if (getSingleSection(secConfig, SECTION_ELB_SUPPORT, strTemp, j_))
         ELB_SUPPORT = beast::lexicalCastThrow<bool>(strTemp);
-
-    if (getSingleSection(secConfig, SECTION_WEBSOCKET_PING_FREQ, strTemp, j_))
-        WEBSOCKET_PING_FREQ =
-            std::chrono::seconds{beast::lexicalCastThrow<int>(strTemp)};
 
     getSingleSection(secConfig, SECTION_SSL_VERIFY_FILE, SSL_VERIFY_FILE, j_);
     getSingleSection(secConfig, SECTION_SSL_VERIFY_DIR, SSL_VERIFY_DIR, j_);
@@ -423,8 +576,7 @@ Config::loadFromString(std::string const& fileContents)
 
     if (exists(SECTION_VALIDATION_SEED) && exists(SECTION_VALIDATOR_TOKEN))
         Throw<std::runtime_error>("Cannot have both [" SECTION_VALIDATION_SEED
-                                  "] "
-                                  "and [" SECTION_VALIDATOR_TOKEN
+                                  "] and [" SECTION_VALIDATOR_TOKEN
                                   "] config sections");
 
     if (getSingleSection(secConfig, SECTION_NETWORK_QUORUM, strTemp, j_))
@@ -481,6 +633,92 @@ Config::loadFromString(std::string const& fileContents)
     if (getSingleSection(secConfig, SECTION_COMPRESSION, strTemp, j_))
         COMPRESSION = beast::lexicalCastThrow<bool>(strTemp);
 
+    if (getSingleSection(secConfig, SECTION_LEDGER_REPLAY, strTemp, j_))
+        LEDGER_REPLAY = beast::lexicalCastThrow<bool>(strTemp);
+
+    if (exists(SECTION_REDUCE_RELAY))
+    {
+        auto sec = section(SECTION_REDUCE_RELAY);
+        VP_REDUCE_RELAY_ENABLE = sec.value_or("vp_enable", false);
+        VP_REDUCE_RELAY_SQUELCH = sec.value_or("vp_squelch", false);
+        TX_REDUCE_RELAY_ENABLE = sec.value_or("tx_enable", false);
+        TX_REDUCE_RELAY_METRICS = sec.value_or("tx_metrics", false);
+        TX_REDUCE_RELAY_MIN_PEERS = sec.value_or("tx_min_peers", 20);
+        TX_RELAY_PERCENTAGE = sec.value_or("tx_relay_percentage", 25);
+        if (TX_RELAY_PERCENTAGE < 10 || TX_RELAY_PERCENTAGE > 100 ||
+            TX_REDUCE_RELAY_MIN_PEERS < 10)
+            Throw<std::runtime_error>(
+                "Invalid " SECTION_REDUCE_RELAY
+                ", tx_min_peers must be greater or equal to 10"
+                ", tx_relay_percentage must be greater or equal to 10 "
+                "and less or equal to 100");
+    }
+
+    if (getSingleSection(secConfig, SECTION_MAX_TRANSACTIONS, strTemp, j_))
+    {
+        MAX_TRANSACTIONS = std::clamp(
+            beast::lexicalCastThrow<int>(strTemp),
+            MIN_JOB_QUEUE_TX,
+            MAX_JOB_QUEUE_TX);
+    }
+
+    if (getSingleSection(secConfig, SECTION_SERVER_DOMAIN, strTemp, j_))
+    {
+        if (!isProperlyFormedTomlDomain(strTemp))
+        {
+            Throw<std::runtime_error>(
+                "Invalid " SECTION_SERVER_DOMAIN
+                ": the domain name does not appear to meet the requirements.");
+        }
+
+        SERVER_DOMAIN = strTemp;
+    }
+
+    if (exists(SECTION_OVERLAY))
+    {
+        auto const sec = section(SECTION_OVERLAY);
+
+        using namespace std::chrono;
+
+        try
+        {
+            if (auto val = sec.get("max_unknown_time"))
+                MAX_UNKNOWN_TIME =
+                    seconds{beast::lexicalCastThrow<std::uint32_t>(*val)};
+        }
+        catch (...)
+        {
+            Throw<std::runtime_error>(
+                "Invalid value 'max_unknown_time' in " SECTION_OVERLAY
+                ": must be of the form '<number>' representing seconds.");
+        }
+
+        if (MAX_UNKNOWN_TIME < seconds{300} || MAX_UNKNOWN_TIME > seconds{1800})
+            Throw<std::runtime_error>(
+                "Invalid value 'max_unknown_time' in " SECTION_OVERLAY
+                ": the time must be between 300 and 1800 seconds, inclusive.");
+
+        try
+        {
+            if (auto val = sec.get("max_diverged_time"))
+                MAX_DIVERGED_TIME =
+                    seconds{beast::lexicalCastThrow<std::uint32_t>(*val)};
+        }
+        catch (...)
+        {
+            Throw<std::runtime_error>(
+                "Invalid value 'max_diverged_time' in " SECTION_OVERLAY
+                ": must be of the form '<number>' representing seconds.");
+        }
+
+        if (MAX_DIVERGED_TIME < seconds{60} || MAX_DIVERGED_TIME > seconds{900})
+        {
+            Throw<std::runtime_error>(
+                "Invalid value 'max_diverged_time' in " SECTION_OVERLAY
+                ": the time must be between 60 and 900 seconds, inclusive.");
+        }
+    }
+
     if (getSingleSection(
             secConfig, SECTION_AMENDMENT_MAJORITY_TIME, strTemp, j_))
     {
@@ -511,6 +749,9 @@ Config::loadFromString(std::string const& fileContents)
                 ", the minimum amount of time an amendment must hold a "
                 "majority is 15 minutes");
     }
+
+    if (getSingleSection(secConfig, SECTION_BETA_RPC_API, strTemp, j_))
+        BETA_RPC_API = beast::lexicalCastThrow<bool>(strTemp);
 
     // Do not load trusted validator configuration for standalone mode
     if (!RUN_STANDALONE)
@@ -698,7 +939,7 @@ Config::getDebugLogFile() const
 }
 
 int
-Config::getValueFor(SizedItem item, boost::optional<std::size_t> node) const
+Config::getValueFor(SizedItem item, std::optional<std::size_t> node) const
 {
     auto const index = static_cast<std::underlying_type_t<SizedItem>>(item);
     assert(index < sizedItems.size());

@@ -32,7 +32,6 @@ namespace detail {
 // This array will be omitted from the object file; only the sorted version
 // will remain in the object file.  But the string literals will remain.
 constexpr static ErrorInfo unorderedErrorInfos[]{
-    {rpcACT_BITCOIN, "actBitcoin", "Account is bitcoin address."},
     {rpcACT_MALFORMED, "actMalformed", "Account malformed."},
     {rpcACT_NOT_FOUND, "actNotFound", "Account not found."},
     {rpcALREADY_MULTISIG, "alreadyMultisig", "Already multisigned."},
@@ -40,6 +39,7 @@ constexpr static ErrorInfo unorderedErrorInfos[]{
     {rpcAMENDMENT_BLOCKED,
      "amendmentBlocked",
      "Amendment blocked, need upgrade."},
+    {rpcEXPIRED_VALIDATOR_LIST, "unlBlocked", "Validator list expired."},
     {rpcATX_DEPRECATED,
      "deprecated",
      "Use the new API or specify a ledger range."},
@@ -74,6 +74,9 @@ constexpr static ErrorInfo unorderedErrorInfos[]{
      "Destination issuer is malformed."},
     {rpcEXCESSIVE_LGR_RANGE, "excessiveLgrRange", "Ledger range exceeds 1000."},
     {rpcFORBIDDEN, "forbidden", "Bad credentials."},
+    {rpcFAILED_TO_FORWARD,
+     "failedToForward",
+     "Failed to forward request to p2p node"},
     {rpcHIGH_FEE, "highFee", "Current transaction fee exceeds your limit."},
     {rpcINTERNAL, "internal", "Internal error."},
     {rpcINVALID_LGR_RANGE, "invalidLgrRange", "Ledger range is invalid."},
@@ -98,6 +101,9 @@ constexpr static ErrorInfo unorderedErrorInfos[]{
      "You don't have permission for this command."},
     {rpcNO_PF_REQUEST, "noPathRequest", "No pathfinding request in progress."},
     {rpcPUBLIC_MALFORMED, "publicMalformed", "Public key is malformed."},
+    {rpcREPORTING_UNSUPPORTED,
+     "reportingUnsupported",
+     "Requested operation not supported by reporting mode server"},
     {rpcSIGNING_MALFORMED,
      "signingMalformed",
      "Signing of transaction is malformed."},

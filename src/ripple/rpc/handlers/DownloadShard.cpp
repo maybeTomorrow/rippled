@@ -48,6 +48,9 @@ namespace ripple {
 Json::Value
 doDownloadShard(RPC::JsonContext& context)
 {
+    if (context.app.config().reporting())
+        return rpcError(rpcREPORTING_UNSUPPORTED);
+
     if (context.role != Role::ADMIN)
         return rpcError(rpcNO_PERMISSION);
 
@@ -99,8 +102,9 @@ doDownloadShard(RPC::JsonContext& context)
         {
             return RPC::invalid_field_error(jss::url);
         }
-        if (url.scheme != "https")
-            return RPC::expected_field_error(std::string(jss::url), "HTTPS");
+        if (url.scheme != "https" && url.scheme != "http")
+            return RPC::expected_field_error(
+                std::string(jss::url), "HTTPS or HTTP");
 
         // URL must point to an lz4 compressed tar archive '.tar.lz4'
         auto archiveName{url.path.substr(url.path.find_last_of("/\\") + 1)};

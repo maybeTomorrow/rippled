@@ -18,7 +18,6 @@
 //==============================================================================
 
 #include <ripple/basics/StringUtilities.h>
-#include <ripple/protocol/Feature.h>
 #include <ripple/protocol/jss.h>
 #include <test/jtx.h>
 
@@ -59,7 +58,9 @@ public:
             Account const bob{std::string("bob") + std::to_string(i)};
             env.fund(XRP(1000), bob);
         }
-        env.close();
+        // Note that calls to env.close() fail without admin permission.
+        if (asAdmin)
+            env.close();
 
         // with no limit specified, we get the max_limit if the total number of
         // accounts is greater than max, which it is here
@@ -108,7 +109,6 @@ public:
             Account const bob{std::string("bob") + std::to_string(i)};
             env.fund(XRP(1000), bob);
         }
-        env.close();
 
         // with no limit specified, we should get all of our fund entries
         // plus three more related to the gateway setup
@@ -213,7 +213,6 @@ public:
             Account const bob{std::string("bob") + std::to_string(i)};
             env.fund(XRP(1000), bob);
         }
-        env.close();
 
         // with no limit specified, we should get all of our fund entries
         // plus three more related to the gateway setup
@@ -309,10 +308,7 @@ public:
         // Put a bunch of different LedgerEntryTypes into a ledger
         using namespace test::jtx;
         using namespace std::chrono;
-        Env env{
-            *this,
-            envconfig(validator, ""),
-            supported_amendments().set(featureTickets)};
+        Env env{*this, envconfig(validator, "")};
 
         Account const gw{"gateway"};
         auto const USD = gw["USD"];
@@ -338,7 +334,7 @@ public:
         }
         env(signers(
             Account{"bob0"}, 1, {{Account{"bob1"}, 1}, {Account{"bob2"}, 1}}));
-        env(ticket::create(env.master));
+        env(ticket::create(env.master, 1));
 
         {
             Json::Value jv;

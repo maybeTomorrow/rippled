@@ -17,11 +17,12 @@
 */
 //==============================================================================
 
-#include <ripple/app/main/Application.h>
 #include <ripple/app/misc/LoadFeeTrack.h>
 #include <ripple/core/TimeKeeper.h>
+#include <ripple/net/RPCErr.h>
 #include <ripple/overlay/Cluster.h>
 #include <ripple/overlay/Overlay.h>
+#include <ripple/protocol/ErrorCodes.h>
 #include <ripple/protocol/jss.h>
 #include <ripple/rpc/Context.h>
 
@@ -30,19 +31,38 @@ namespace ripple {
 Json::Value
 doPeers(RPC::JsonContext& context)
 {
+    if (context.app.config().reporting())
+        return rpcError(rpcREPORTING_UNSUPPORTED);
+
     Json::Value jvResult(Json::objectValue);
 
+    jvResult[jss::peers] = context.app.overlay().json();
+
+    // Legacy support
+    if (context.apiVersion == 1)
     {
-        jvResult[jss::peers] = context.app.overlay().json();
+        for (auto& p : jvResult[jss::peers])
+        {
+            if (p.isMember(jss::track))
+            {
+                auto const s = p[jss::track].asString();
 
-        auto const now = context.app.timeKeeper().now();
-        auto const self = context.app.nodeIdentity().first;
+                if (s == "diverged")
+                    p["sanity"] = "insane";
+                else if (s == "unknown")
+                    p["sanity"] = "unknown";
+            }
+        }
+    }
 
-        Json::Value& cluster = (jvResult[jss::cluster] = Json::objectValue);
-        std::uint32_t ref = context.app.getFeeTrack().getLoadBase();
+    auto const now = context.app.timeKeeper().now();
+    auto const self = context.app.nodeIdentity().first;
 
-        context.app.cluster().for_each([&cluster, now, ref, &self](
-                                           ClusterNode const& node) {
+    Json::Value& cluster = (jvResult[jss::cluster] = Json::objectValue);
+    std::uint32_t ref = context.app.getFeeTrack().getLoadBase();
+
+    context.app.cluster().for_each(
+        [&cluster, now, ref, &self](ClusterNode const& node) {
             if (node.identity() == self)
                 return;
 
@@ -60,7 +80,6 @@ doPeers(RPC::JsonContext& context)
                     ? 0
                     : (now - node.getReportTime()).count();
         });
-    }
 
     return jvResult;
 }

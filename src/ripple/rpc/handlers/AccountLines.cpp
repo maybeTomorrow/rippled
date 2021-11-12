@@ -62,10 +62,10 @@ addLine(Json::Value& jsonLines, RippleState const& line)
         jPeer[jss::authorized] = true;
     if (line.getAuthPeer())
         jPeer[jss::peer_authorized] = true;
-    if (line.getNoRipple())
-        jPeer[jss::no_ripple] = true;
-    if (line.getNoRipplePeer())
-        jPeer[jss::no_ripple_peer] = true;
+    if (line.getNoRipple() || !line.getDefaultRipple())
+        jPeer[jss::no_ripple] = line.getNoRipple();
+    if (line.getNoRipplePeer() || !line.getDefaultRipple())
+        jPeer[jss::no_ripple_peer] = line.getNoRipplePeer();
     if (line.getFreeze())
         jPeer[jss::freeze] = true;
     if (line.getFreezePeer())
@@ -139,7 +139,9 @@ doAccountLines(RPC::JsonContext& context)
         if (!marker.isString())
             return RPC::expected_field_error(jss::marker, "string");
 
-        startAfter.SetHex(marker.asString());
+        if (!startAfter.parseHex(marker.asString()))
+            return rpcError(rpcINVALID_PARAMS);
+
         auto const sleLine = ledger->read({ltRIPPLE_STATE, startAfter});
 
         if (!sleLine)

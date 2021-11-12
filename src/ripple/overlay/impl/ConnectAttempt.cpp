@@ -202,7 +202,11 @@ ConnectAttempt::onHandshake(error_code ec)
         return close();  // makeSharedValue logs
 
     req_ = makeRequest(
-        !overlay_.peerFinder().config().peerPrivate, app_.config().COMPRESSION);
+        !overlay_.peerFinder().config().peerPrivate,
+        app_.config().COMPRESSION,
+        app_.config().LEDGER_REPLAY,
+        app_.config().TX_REDUCE_RELAY_ENABLE,
+        app_.config().VP_REDUCE_RELAY_ENABLE);
 
     buildHandshake(
         req_,
@@ -281,23 +285,6 @@ ConnectAttempt::onShutdown(error_code ec)
 
 //--------------------------------------------------------------------------
 
-auto
-ConnectAttempt::makeRequest(bool crawl, bool compressionEnabled) -> request_type
-{
-    request_type m;
-    m.method(boost::beast::http::verb::get);
-    m.target("/");
-    m.version(11);
-    m.insert("User-Agent", BuildInfo::getFullVersionString());
-    m.insert("Upgrade", supportedProtocolVersions());
-    m.insert("Connection", "Upgrade");
-    m.insert("Connect-As", "Peer");
-    m.insert("Crawl", crawl ? "public" : "private");
-    if (compressionEnabled)
-        m.insert("X-Offer-Compression", "lz4");
-    return m;
-}
-
 void
 ConnectAttempt::processResponse()
 {
@@ -307,7 +294,7 @@ ConnectAttempt::processResponse()
         Json::Reader r;
         std::string s;
         s.reserve(boost::asio::buffer_size(response_.body().data()));
-        for (auto const& buffer : response_.body().data())
+        for (auto const buffer : response_.body().data())
             s.append(
                 boost::asio::buffer_cast<char const*>(buffer),
                 boost::asio::buffer_size(buffer));
@@ -347,7 +334,7 @@ ConnectAttempt::processResponse()
 
     // Just because our peer selected a particular protocol version doesn't
     // mean that it's acceptable to us. Check that it is:
-    boost::optional<ProtocolVersion> negotiatedProtocol;
+    std::optional<ProtocolVersion> negotiatedProtocol;
 
     {
         auto const pvs = parseProtocolVersions(response_["Upgrade"]);

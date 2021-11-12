@@ -25,6 +25,7 @@
 #include <ripple/core/TimeKeeper.h>
 #include <ripple/overlay/Compression.h>
 #include <ripple/overlay/Message.h>
+#include <ripple/overlay/impl/Handshake.h>
 #include <ripple/overlay/impl/ProtocolMessage.h>
 #include <ripple/overlay/impl/ZeroCopyStream.h>
 #include <ripple/protocol/HashPrefix.h>
@@ -112,7 +113,7 @@ public:
 
         BEAST_EXPECT(header);
 
-        if (header->algorithm == Algorithm::None)
+        if (!header || header->algorithm == Algorithm::None)
             return;
 
         std::vector<std::uint8_t> decompressed;
@@ -180,15 +181,12 @@ public:
     buildEndpoints(int n)
     {
         auto endpoints = std::make_shared<protocol::TMEndpoints>();
-        endpoints->mutable_endpoints()->Reserve(n);
+        endpoints->mutable_endpoints_v2()->Reserve(n);
         for (int i = 0; i < n; i++)
         {
-            auto* endpoint = endpoints->add_endpoints();
-            endpoint->set_hops(i);
-            std::string addr = std::string("10.0.1.") + std::to_string(i);
-            endpoint->mutable_ipv4()->set_ipv4(boost::endian::native_to_big(
-                boost::asio::ip::address_v4::from_string(addr).to_uint()));
-            endpoint->mutable_ipv4()->set_ipv4port(i);
+            auto ep = endpoints->add_endpoints_v2();
+            ep->set_endpoint(std::string("10.0.1.") + std::to_string(i));
+            ep->set_hops(i);
         }
         endpoints->set_version(2);
 
@@ -206,18 +204,11 @@ public:
         env.trust(bob["USD"](fund), alice);
         env.close();
 
-        auto toBinary = [](std::string const& text) {
-            std::string binary;
-            for (size_t i = 0; i < text.size(); ++i)
-            {
-                unsigned int c = charUnHex(text[i]);
-                c = c << 4;
-                ++i;
-                c = c | charUnHex(text[i]);
-                binary.push_back(c);
-            }
-
-            return binary;
+        auto toBinary = [this](std::string const& text) {
+            auto blob = strUnHex(text);
+            BEAST_EXPECT(blob);
+            return std::string{
+                reinterpret_cast<char const*>(blob->data()), blob->size()};
         };
 
         std::string usdTxBlob = "";
@@ -252,7 +243,7 @@ public:
         uint256 const hash(ripple::sha512Half(123456789));
         getLedger->set_ledgerhash(hash.begin(), hash.size());
         getLedger->set_ledgerseq(123456789);
-        ripple::SHAMapNodeID sha(hash.data(), hash.size());
+        ripple::SHAMapNodeID sha(64, hash);
         getLedger->add_nodeids(sha.getRawString());
         getLedger->set_requestcookie(123456789);
         getLedger->set_querytype(protocol::qtINDIRECT);
@@ -312,7 +303,7 @@ public:
             uint256 hash(ripple::sha512Half(i));
             auto object = getObject->add_objects();
             object->set_hash(hash.data(), hash.size());
-            ripple::SHAMapNodeID sha(hash.data(), hash.size());
+            ripple::SHAMapNodeID sha(64, hash);
             object->set_nodeid(sha.getRawString());
             object->set_index("");
             object->set_data("");
@@ -354,11 +345,43 @@ public:
         return list;
     }
 
+    std::shared_ptr<protocol::TMValidatorListCollection>
+    buildValidatorListCollection()
+    {
+        auto list = std::make_shared<protocol::TMValidatorListCollection>();
+
+        auto master = randomKeyPair(KeyType::ed25519);
+        auto signing = randomKeyPair(KeyType::ed25519);
+        STObject st(sfGeneric);
+        st[sfSequence] = 0;
+        st[sfPublicKey] = std::get<0>(master);
+        st[sfSigningPubKey] = std::get<0>(signing);
+        st[sfDomain] = makeSlice(std::string("example.com"));
+        sign(
+            st,
+            HashPrefix::manifest,
+            KeyType::ed25519,
+            std::get<1>(master),
+            sfMasterSignature);
+        sign(st, HashPrefix::manifest, KeyType::ed25519, std::get<1>(signing));
+        Serializer s;
+        st.add(s);
+        list->set_manifest(s.data(), s.size());
+        list->set_version(4);
+        STObject signature(sfSignature);
+        ripple::sign(
+            st, HashPrefix::manifest, KeyType::ed25519, std::get<1>(signing));
+        Serializer s1;
+        st.add(s1);
+        auto& blob = *list->add_blobs();
+        blob.set_signature(s1.data(), s1.size());
+        blob.set_blob(strHex(s.getString()));
+        return list;
+    }
+
     void
     testProtocol()
     {
-        testcase("Message Compression");
-
         auto thresh = beast::severities::Severity::kInfo;
         auto logs = std::make_unique<Logs>(thresh);
 
@@ -369,6 +392,7 @@ public:
         protocol::TMLedgerData ledger_data;
         protocol::TMGetObjectByHash get_object;
         protocol::TMValidatorList validator_list;
+        protocol::TMValidatorListCollection validator_list_collection;
 
         // 4.5KB
         doTest(buildManifests(20), protocol::mtMANIFESTS, 4, "TMManifests20");
@@ -428,16 +452,89 @@ public:
             protocol::mtVALIDATORLIST,
             4,
             "TMValidatorList");
+        doTest(
+            buildValidatorListCollection(),
+            protocol::mtVALIDATORLISTCOLLECTION,
+            4,
+            "TMValidatorListCollection");
+    }
+
+    void
+    testHandshake()
+    {
+        testcase("Handshake");
+        auto getEnv = [&](bool enable) {
+            Config c;
+            std::stringstream str;
+            str << "[reduce_relay]\n"
+                << "vp_enable=1\n"
+                << "vp_squelch=1\n"
+                << "[compression]\n"
+                << enable << "\n";
+            c.loadFromString(str.str());
+            auto env = std::make_shared<jtx::Env>(*this);
+            env->app().config().COMPRESSION = c.COMPRESSION;
+            env->app().config().VP_REDUCE_RELAY_ENABLE =
+                c.VP_REDUCE_RELAY_ENABLE;
+            env->app().config().VP_REDUCE_RELAY_SQUELCH =
+                c.VP_REDUCE_RELAY_SQUELCH;
+            return env;
+        };
+        auto handshake = [&](int outboundEnable, int inboundEnable) {
+            beast::IP::Address addr =
+                boost::asio::ip::address::from_string("172.1.1.100");
+
+            auto env = getEnv(outboundEnable);
+            auto request = ripple::makeRequest(
+                true,
+                env->app().config().COMPRESSION,
+                false,
+                env->app().config().TX_REDUCE_RELAY_ENABLE,
+                env->app().config().VP_REDUCE_RELAY_ENABLE);
+            http_request_type http_request;
+            http_request.version(request.version());
+            http_request.base() = request.base();
+            // feature enabled on the peer's connection only if both sides are
+            // enabled
+            auto const peerEnabled = inboundEnable && outboundEnable;
+            // inbound is enabled if the request's header has the feature
+            // enabled and the peer's configuration is enabled
+            auto const inboundEnabled = peerFeatureEnabled(
+                http_request, FEATURE_COMPR, "lz4", inboundEnable);
+            BEAST_EXPECT(!(peerEnabled ^ inboundEnabled));
+
+            env.reset();
+            env = getEnv(inboundEnable);
+            auto http_resp = ripple::makeResponse(
+                true,
+                http_request,
+                addr,
+                addr,
+                uint256{1},
+                1,
+                {1, 0},
+                env->app());
+            // outbound is enabled if the response's header has the feature
+            // enabled and the peer's configuration is enabled
+            auto const outboundEnabled = peerFeatureEnabled(
+                http_resp, FEATURE_COMPR, "lz4", outboundEnable);
+            BEAST_EXPECT(!(peerEnabled ^ outboundEnabled));
+        };
+        handshake(1, 1);
+        handshake(1, 0);
+        handshake(0, 1);
+        handshake(0, 0);
     }
 
     void
     run() override
     {
         testProtocol();
+        testHandshake();
     }
 };
 
-BEAST_DEFINE_TESTSUITE_MANUAL_PRIO(compression, ripple_data, ripple, 20);
+BEAST_DEFINE_TESTSUITE_MANUAL(compression, ripple_data, ripple);
 
 }  // namespace test
 }  // namespace ripple

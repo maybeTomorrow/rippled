@@ -21,14 +21,18 @@
 #include <ripple/app/main/Application.h>
 #include <ripple/app/misc/HashRouter.h>
 #include <ripple/app/misc/Transaction.h>
+#include <ripple/app/rdb/RelationalDBInterface_postgres.h>
+#include <ripple/app/rdb/backend/RelationalDBInterfacePostgres.h>
+#include <ripple/app/rdb/backend/RelationalDBInterfaceSqlite.h>
 #include <ripple/app/tx/apply.h>
 #include <ripple/basics/Log.h>
 #include <ripple/basics/safe_cast.h>
 #include <ripple/core/DatabaseCon.h>
+#include <ripple/core/Pg.h>
+#include <ripple/json/json_reader.h>
 #include <ripple/protocol/ErrorCodes.h>
 #include <ripple/protocol/Feature.h>
 #include <ripple/protocol/jss.h>
-#include <boost/optional.hpp>
 
 namespace ripple {
 
@@ -105,86 +109,48 @@ Transaction::transactionFromSQL(
     return tr;
 }
 
-Transaction::pointer
+std::variant<
+    std::pair<std::shared_ptr<Transaction>, std::shared_ptr<TxMeta>>,
+    TxSearched>
 Transaction::load(uint256 const& id, Application& app, error_code_i& ec)
 {
-    return boost::get<pointer>(load(id, app, boost::none, ec));
+    return load(id, app, std::nullopt, ec);
 }
 
-boost::variant<Transaction::pointer, bool>
+std::variant<
+    std::pair<std::shared_ptr<Transaction>, std::shared_ptr<TxMeta>>,
+    TxSearched>
 Transaction::load(
     uint256 const& id,
     Application& app,
     ClosedInterval<uint32_t> const& range,
     error_code_i& ec)
 {
-    using op = boost::optional<ClosedInterval<uint32_t>>;
+    using op = std::optional<ClosedInterval<uint32_t>>;
 
     return load(id, app, op{range}, ec);
 }
 
-boost::variant<Transaction::pointer, bool>
+Transaction::Locator
+Transaction::locate(uint256 const& id, Application& app)
+{
+    return dynamic_cast<RelationalDBInterfacePostgres*>(
+               &app.getRelationalDBInterface())
+        ->locateTransaction(id);
+}
+
+std::variant<
+    std::pair<std::shared_ptr<Transaction>, std::shared_ptr<TxMeta>>,
+    TxSearched>
 Transaction::load(
     uint256 const& id,
     Application& app,
-    boost::optional<ClosedInterval<uint32_t>> const& range,
+    std::optional<ClosedInterval<uint32_t>> const& range,
     error_code_i& ec)
 {
-    std::string sql =
-        "SELECT LedgerSeq,Status,RawTxn "
-        "FROM Transactions WHERE TransID='";
-
-    sql.append(to_string(id));
-    sql.append("';");
-
-    boost::optional<std::uint64_t> ledgerSeq;
-    boost::optional<std::string> status;
-    Blob rawTxn;
-    {
-        auto db = app.getTxnDB().checkoutDb();
-        soci::blob sociRawTxnBlob(*db);
-        soci::indicator rti;
-
-        *db << sql, soci::into(ledgerSeq), soci::into(status),
-            soci::into(sociRawTxnBlob, rti);
-
-        auto const got_data = db->got_data();
-
-        if ((!got_data || rti != soci::i_ok) && !range)
-            return nullptr;
-
-        if (!got_data)
-        {
-            uint64_t count = 0;
-
-            *db << "SELECT COUNT(DISTINCT LedgerSeq) FROM Transactions WHERE "
-                   "LedgerSeq BETWEEN "
-                << range->first() << " AND " << range->last() << ";",
-                soci::into(count, rti);
-
-            if (!db->got_data() || rti != soci::i_ok)
-                return false;
-
-            return count == (range->last() - range->first() + 1);
-        }
-
-        convert(sociRawTxnBlob, rawTxn);
-    }
-
-    try
-    {
-        return Transaction::transactionFromSQL(ledgerSeq, status, rawTxn, app);
-    }
-    catch (std::exception& e)
-    {
-        JLOG(app.journal("Ledger").warn())
-            << "Unable to deserialize transaction from raw SQL value. Error: "
-            << e.what();
-
-        ec = rpcDB_DESERIALIZATION;
-    }
-
-    return nullptr;
+    return dynamic_cast<RelationalDBInterfaceSqlite*>(
+               &app.getRelationalDBInterface())
+        ->getTransaction(id, range, ec);
 }
 
 // options 1 to include the date of the transaction

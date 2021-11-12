@@ -21,6 +21,8 @@
 #define RIPPLE_NODESTORE_BACKEND_H_INCLUDED
 
 #include <ripple/nodestore/Types.h>
+#include <atomic>
+#include <cstdint>
 
 namespace ripple {
 namespace NodeStore {
@@ -37,6 +39,29 @@ namespace NodeStore {
 class Backend
 {
 public:
+    template <typename T>
+    struct Counters
+    {
+        Counters() = default;
+        Counters(Counters const&) = default;
+
+        template <typename U>
+        Counters(Counters<U> const& other)
+            : writeDurationUs(other.writeDurationUs)
+            , writeRetries(other.writeRetries)
+            , writesDelayed(other.writesDelayed)
+            , readRetries(other.readRetries)
+            , readErrors(other.readErrors)
+        {
+        }
+
+        T writeDurationUs = {};
+        T writeRetries = {};
+        T writesDelayed = {};
+        T readRetries = {};
+        T readErrors = {};
+    };
+
     /** Destroy the backend.
 
         All open files are closed and flushed. If there are batched writes
@@ -58,6 +83,26 @@ public:
     virtual void
     open(bool createIfMissing = true) = 0;
 
+    /** Returns true is the database is open.
+     */
+    virtual bool
+    isOpen() = 0;
+
+    /** Open the backend.
+        @param createIfMissing Create the database files if necessary.
+        @param appType Deterministic appType used to create a backend.
+        @param uid Deterministic uid used to create a backend.
+        @param salt Deterministic salt used to create a backend.
+        @throws std::runtime_error is function is called not for NuDB backend.
+    */
+    virtual void
+    open(bool createIfMissing, uint64_t appType, uint64_t uid, uint64_t salt)
+    {
+        Throw<std::runtime_error>(
+            "Deterministic appType/uid/salt not supported by backend " +
+            getName());
+    }
+
     /** Close the backend.
         This allows the caller to catch exceptions.
     */
@@ -75,13 +120,9 @@ public:
     virtual Status
     fetch(void const* key, std::shared_ptr<NodeObject>* pObject) = 0;
 
-    /** Return `true` if batch fetches are optimized. */
-    virtual bool
-    canFetchBatch() = 0;
-
     /** Fetch a batch synchronously. */
-    virtual std::vector<std::shared_ptr<NodeObject>>
-    fetchBatch(std::size_t n, void const* const* keys) = 0;
+    virtual std::pair<std::vector<std::shared_ptr<NodeObject>>, Status>
+    fetchBatch(std::vector<uint256 const*> const& hashes) = 0;
 
     /** Store a single object.
         Depending on the implementation this may happen immediately
@@ -98,6 +139,9 @@ public:
     */
     virtual void
     storeBatch(Batch const& batch) = 0;
+
+    virtual void
+    sync() = 0;
 
     /** Visit every object in the database
         This is usually called during import.
@@ -116,19 +160,30 @@ public:
     virtual void
     setDeletePath() = 0;
 
-    /** Perform consistency checks on database. */
+    /** Perform consistency checks on database.
+     *
+     * This method is implemented only by NuDBBackend. It is not yet called
+     * anywhere, but it might be a good idea to one day call it at startup to
+     * avert a crash.
+     */
     virtual void
-    verify() = 0;
+    verify()
+    {
+    }
 
     /** Returns the number of file descriptors the backend expects to need. */
     virtual int
     fdRequired() const = 0;
 
-    /** Returns true if the backend uses permanent storage. */
-    bool
-    backed() const
+    /** Returns read and write stats.
+
+        @note The Counters struct is specific to and only used
+              by CassandraBackend.
+    */
+    virtual std::optional<Counters<std::uint64_t>>
+    counters() const
     {
-        return fdRequired();
+        return std::nullopt;
     }
 };
 

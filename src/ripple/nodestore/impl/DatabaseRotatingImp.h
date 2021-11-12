@@ -34,19 +34,16 @@ public:
     operator=(DatabaseRotatingImp const&) = delete;
 
     DatabaseRotatingImp(
-        std::string const& name,
         Scheduler& scheduler,
         int readThreads,
-        Stoppable& parent,
         std::shared_ptr<Backend> writableBackend,
         std::shared_ptr<Backend> archiveBackend,
         Section const& config,
         beast::Journal j);
 
-    ~DatabaseRotatingImp() override
+    ~DatabaseRotatingImp()
     {
-        // Stop threads before data members are destroyed.
-        stopThreads();
+        stop();
     }
 
     void
@@ -61,70 +58,37 @@ public:
     getWriteLoad() const override;
 
     void
-    import(Database& source) override;
+    importDatabase(Database& source) override;
 
-    void
-    store(
-        NodeObjectType type,
-        Blob&& data,
-        uint256 const& hash,
-        std::uint32_t seq) override;
-
-    std::shared_ptr<NodeObject>
-    fetch(uint256 const& hash, std::uint32_t seq) override
+    bool isSameDB(std::uint32_t, std::uint32_t) override
     {
-        return doFetch(hash, seq, *pCache_, *nCache_, false);
+        // rotating store acts as one logical database
+        return true;
     }
 
-    bool
-    asyncFetch(
-        uint256 const& hash,
-        std::uint32_t seq,
-        std::shared_ptr<NodeObject>& object) override;
+    void
+    store(NodeObjectType type, Blob&& data, uint256 const& hash, std::uint32_t)
+        override;
+
+    void
+    sync() override;
 
     bool
     storeLedger(std::shared_ptr<Ledger const> const& srcLedger) override;
 
-    int
-    getDesiredAsyncReadCount(std::uint32_t seq) override
-    {
-        // We prefer a client not fill our cache
-        // We don't want to push data out of the cache
-        // before it's retrieved
-        return pCache_->getTargetSize() / asyncDivider;
-    }
-
-    float
-    getCacheHitRate() override
-    {
-        return pCache_->getHitRate();
-    }
-
-    void
-    tune(int size, std::chrono::seconds age) override;
-
     void
     sweep() override;
 
-    TaggedCache<uint256, NodeObject> const&
-    getPositiveCache() override
-    {
-        return *pCache_;
-    }
-
 private:
-    // Positive cache
-    std::shared_ptr<TaggedCache<uint256, NodeObject>> pCache_;
-
-    // Negative cache
-    std::shared_ptr<KeyCache<uint256>> nCache_;
-
     std::shared_ptr<Backend> writableBackend_;
     std::shared_ptr<Backend> archiveBackend_;
     mutable std::mutex mutex_;
 
     std::shared_ptr<NodeObject>
-    fetchFrom(uint256 const& hash, std::uint32_t seq) override;
+    fetchNodeObject(
+        uint256 const& hash,
+        std::uint32_t,
+        FetchReport& fetchReport) override;
 
     void
     for_each(std::function<void(std::shared_ptr<NodeObject>)> f) override;

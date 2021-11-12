@@ -20,12 +20,13 @@
 #ifndef RIPPLE_PROTOCOL_STTX_H_INCLUDED
 #define RIPPLE_PROTOCOL_STTX_H_INCLUDED
 
+#include <ripple/basics/Expected.h>
 #include <ripple/protocol/PublicKey.h>
 #include <ripple/protocol/STObject.h>
 #include <ripple/protocol/SecretKey.h>
+#include <ripple/protocol/SeqProxy.h>
 #include <ripple/protocol/TxFormats.h>
 #include <boost/container/flat_set.hpp>
-#include <boost/logic/tribool.hpp>
 #include <functional>
 
 namespace ripple {
@@ -42,12 +43,6 @@ enum TxnSql : char {
 class STTx final : public STObject, public CountedObject<STTx>
 {
 public:
-    static char const*
-    getCountedObjectName()
-    {
-        return "STTx";
-    }
-
     static std::size_t const minMultiSigners = 1;
     static std::size_t const maxMultiSigners = 8;
 
@@ -113,16 +108,8 @@ public:
         return getFieldVL(sfSigningPubKey);
     }
 
-    std::uint32_t
-    getSequence() const
-    {
-        return getFieldU32(sfSequence);
-    }
-    void
-    setSequence(std::uint32_t seq)
-    {
-        return setFieldU32(sfSequence, seq);
-    }
+    SeqProxy
+    getSeqProxy() const;
 
     boost::container::flat_set<AccountID>
     getMentionedAccounts() const;
@@ -145,7 +132,7 @@ public:
         @return `true` if valid signature. If invalid, the error message string.
     */
     enum class RequireFullyCanonicalSig : bool { no, yes };
-    std::pair<bool, std::string>
+    Expected<void, std::string>
     checkSign(RequireFullyCanonicalSig requireCanonicalSig) const;
 
     // SQL Functions with metadata.
@@ -164,10 +151,10 @@ public:
         std::string const& escapedMetaData) const;
 
 private:
-    std::pair<bool, std::string>
+    Expected<void, std::string>
     checkSingleSign(RequireFullyCanonicalSig requireCanonicalSig) const;
 
-    std::pair<bool, std::string>
+    Expected<void, std::string>
     checkMultiSign(RequireFullyCanonicalSig requireCanonicalSig) const;
 
     uint256 tid_;

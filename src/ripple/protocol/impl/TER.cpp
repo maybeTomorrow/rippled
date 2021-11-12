@@ -100,11 +100,12 @@ transResults()
         MAKE_ERROR(tefBAD_AUTH_MASTER,        "Auth for unclaimed account needs correct master key."),
         MAKE_ERROR(tefINVARIANT_FAILED,       "Fee claim violated invariants for the transaction."),
         MAKE_ERROR(tefTOO_BIG,                "Transaction affects too many items."),
+        MAKE_ERROR(tefNO_TICKET,              "Ticket is not in ledger."),
 
         MAKE_ERROR(telLOCAL_ERROR,            "Local failure."),
         MAKE_ERROR(telBAD_DOMAIN,             "Domain too long."),
         MAKE_ERROR(telBAD_PATH_COUNT,         "Malformed: Too many paths."),
-        MAKE_ERROR(telBAD_PUBLIC_KEY,         "Public key too long."),
+        MAKE_ERROR(telBAD_PUBLIC_KEY,         "Public key is not valid."),
         MAKE_ERROR(telFAILED_PROCESSING,      "Failed to correctly process transaction."),
         MAKE_ERROR(telINSUF_FEE_P,            "Fee insufficient."),
         MAKE_ERROR(telNO_DST_PARTIAL,         "Partial payment to create account not allowed."),
@@ -150,6 +151,8 @@ transResults()
         MAKE_ERROR(temBAD_TICK_SIZE,          "Malformed: Tick size out of range."),
         MAKE_ERROR(temINVALID_ACCOUNT_ID,     "Malformed: A field contains an invalid account ID."),
         MAKE_ERROR(temCANNOT_PREAUTH_SELF,    "Malformed: An account may not preauthorize itself."),
+        MAKE_ERROR(temINVALID_COUNT,          "Malformed: Count field outside valid range."),
+        MAKE_ERROR(temSEQ_AND_TICKET,         "Transaction contains a TicketSequence and a non-zero Sequence."),
 
         MAKE_ERROR(terRETRY,                  "Retry transaction."),
         MAKE_ERROR(terFUNDS_SPENT,            "DEPRECATED."),
@@ -162,7 +165,7 @@ transResults()
         MAKE_ERROR(terPRE_SEQ,                "Missing/inapplicable prior transaction."),
         MAKE_ERROR(terOWNERS,                 "Non-zero owner count."),
         MAKE_ERROR(terQUEUED,                 "Held until escalated fee drops."),
-
+        MAKE_ERROR(terPRE_TICKET,             "Ticket is not yet in ledger."),
         MAKE_ERROR(tesSUCCESS,                "The transaction was applied. Only final in a validated ledger."),
     };
     // clang-format on
@@ -207,7 +210,7 @@ transHuman(TER code)
     return transResultInfo(code, token, text) ? text : "-";
 }
 
-boost::optional<TER>
+std::optional<TER>
 transCode(std::string const& token)
 {
     static auto const results = [] {
@@ -224,7 +227,7 @@ transCode(std::string const& token)
     auto const r = results.find(token);
 
     if (r == results.end())
-        return boost::none;
+        return std::nullopt;
 
     return TER::fromInt(r->second);
 }

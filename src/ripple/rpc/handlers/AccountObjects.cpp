@@ -73,7 +73,7 @@ doAccountObjects(RPC::JsonContext& context)
     if (!ledger->exists(keylet::account(accountID)))
         return rpcError(rpcACT_NOT_FOUND);
 
-    boost::optional<std::vector<LedgerEntryType>> typeFilter;
+    std::optional<std::vector<LedgerEntryType>> typeFilter;
 
     if (params.isMember(jss::deletion_blockers_only) &&
         params[jss::deletion_blockers_only].asBool())
@@ -111,7 +111,7 @@ doAccountObjects(RPC::JsonContext& context)
             rpcStatus.inject(result);
             return result;
         }
-        else if (type != ltINVALID)
+        else if (type != ltANY)
         {
             typeFilter = std::vector<LedgerEntryType>({type});
         }
@@ -134,13 +134,13 @@ doAccountObjects(RPC::JsonContext& context)
         if (!std::getline(ss, s, ','))
             return RPC::invalid_field_error(jss::marker);
 
-        if (!dirIndex.SetHex(s))
+        if (!dirIndex.parseHex(s))
             return RPC::invalid_field_error(jss::marker);
 
         if (!std::getline(ss, s, ','))
             return RPC::invalid_field_error(jss::marker);
 
-        if (!entryIndex.SetHex(s))
+        if (!entryIndex.parseHex(s))
             return RPC::invalid_field_error(jss::marker);
     }
 

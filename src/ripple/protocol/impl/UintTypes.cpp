@@ -55,8 +55,8 @@ to_string(Currency const& currency)
     if (currency == noCurrency())
         return "1";
 
-    static Currency const sIsoBits(
-        from_hex_text<Currency>("FFFFFFFFFFFFFFFFFFFFFFFF000000FFFFFFFFFF"));
+    static constexpr Currency sIsoBits(
+        "FFFFFFFFFFFFFFFFFFFFFFFF000000FFFFFFFFFF");
 
     if ((currency & sIsoBits).isZero())
     {
@@ -105,7 +105,7 @@ to_currency(Currency& currency, std::string const& code)
         return true;
     }
 
-    return currency.SetHexExact(code);
+    return currency.parseHex(code);
 }
 
 Currency

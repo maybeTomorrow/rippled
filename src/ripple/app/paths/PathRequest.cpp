@@ -24,15 +24,17 @@
 #include <ripple/app/paths/PathRequest.h>
 #include <ripple/app/paths/PathRequests.h>
 #include <ripple/app/paths/RippleCalc.h>
+#include <ripple/app/paths/impl/PathfinderUtils.h>
 #include <ripple/basics/Log.h>
 #include <ripple/beast/core/LexicalCast.h>
 #include <ripple/core/Config.h>
 #include <ripple/net/RPCErr.h>
 #include <ripple/protocol/ErrorCodes.h>
 #include <ripple/protocol/UintTypes.h>
+
 #include <ripple/rpc/impl/Tuning.h>
-#include <boost/algorithm/clamp.hpp>
-#include <boost/optional.hpp>
+#include <optional>
+
 #include <tuple>
 
 namespace ripple {
@@ -471,7 +473,7 @@ PathRequest::getPathFinder(
         *raSrcAccount,
         *raDstAccount,
         currency,
-        boost::none,
+        std::nullopt,
         dst_amount,
         saSendMax,
         app_);
@@ -489,6 +491,10 @@ PathRequest::findPaths(
     Json::Value& jvArray)
 {
     auto sourceCurrencies = sciSourceCurrencies;
+    if (sourceCurrencies.empty() && saSendMax)
+    {
+        sourceCurrencies.insert(saSendMax->issue());
+    }
     if (sourceCurrencies.empty())
     {
         auto currencies = accountSourceCurrencies(*raSrcAccount, cache, true);
@@ -505,10 +511,7 @@ PathRequest::findPaths(
         }
     }
 
-    auto const dst_amount = convert_all_
-        ? STAmount(
-              saDstAmount.issue(), STAmount::cMaxValue, STAmount::cMaxOffset)
-        : saDstAmount;
+    auto const dst_amount = convertAmount(saDstAmount, convert_all_);
     hash_map<Currency, std::unique_ptr<Pathfinder>> currency_map;
     for (auto const& issue : sourceCurrencies)
     {
@@ -620,8 +623,7 @@ PathRequest::findPaths(
         after four source currencies, 50 - (4 * 4) = 34.
     */
     int const size = sourceCurrencies.size();
-    consumer_.charge(
-        {boost::algorithm::clamp(size * size + 34, 50, 400), "path update"});
+    consumer_.charge({std::clamp(size * size + 34, 50, 400), "path update"});
     return true;
 }
 

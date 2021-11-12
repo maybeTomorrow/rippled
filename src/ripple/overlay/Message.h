@@ -20,7 +20,9 @@
 #ifndef RIPPLE_OVERLAY_MESSAGE_H_INCLUDED
 #define RIPPLE_OVERLAY_MESSAGE_H_INCLUDED
 
+#include <ripple/basics/ByteUtilities.h>
 #include <ripple/overlay/Compression.h>
+#include <ripple/protocol/PublicKey.h>
 #include <ripple/protocol/messages.h>
 #include <boost/asio/buffer.hpp>
 #include <boost/asio/buffers_iterator.hpp>
@@ -32,6 +34,8 @@
 #include <type_traits>
 
 namespace ripple {
+
+constexpr std::size_t maximiumMessageSize = megabytes(64);
 
 // VFALCO NOTE If we forward declare Message and write out shared_ptr
 //             instead of using the in-class type alias, we can remove the
@@ -55,8 +59,23 @@ public:
     /** Constructor
      * @param message Protocol message to serialize
      * @param type Protocol message type
+     * @param validator Public Key of the source validator for Validation or
+     * Proposal message. Used to check if the message should be squelched.
      */
-    Message(::google::protobuf::Message const& message, int type);
+    Message(
+        ::google::protobuf::Message const& message,
+        int type,
+        std::optional<PublicKey> const& validator = {});
+
+    /** Retrieve the size of the packed but uncompressed message data. */
+    std::size_t
+    getBufferSize();
+
+    static std::size_t
+    messageSize(::google::protobuf::Message const& message);
+
+    static std::size_t
+    totalSize(::google::protobuf::Message const& message);
 
     /** Retrieve the packed message data. If compressed message is requested but
      * the message is not compressible then the uncompressed buffer is returned.
@@ -74,11 +93,19 @@ public:
         return category_;
     }
 
+    /** Get the validator's key */
+    std::optional<PublicKey> const&
+    getValidatorKey() const
+    {
+        return validatorKey_;
+    }
+
 private:
     std::vector<uint8_t> buffer_;
     std::vector<uint8_t> bufferCompressed_;
     std::size_t category_;
     std::once_flag once_flag_;
+    std::optional<PublicKey> validatorKey_;
 
     /** Set the payload header
      * @param in Pointer to the payload

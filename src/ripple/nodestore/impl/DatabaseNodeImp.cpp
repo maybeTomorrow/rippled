@@ -29,44 +29,139 @@ DatabaseNodeImp::store(
     NodeObjectType type,
     Blob&& data,
     uint256 const& hash,
-    std::uint32_t seq)
+    std::uint32_t)
 {
     auto nObj = NodeObject::createObject(type, std::move(data), hash);
-    pCache_->canonicalize_replace_cache(hash, nObj);
     backend_->store(nObj);
-    nCache_->erase(hash);
-    storeStats(nObj->getData().size());
-}
-
-bool
-DatabaseNodeImp::asyncFetch(
-    uint256 const& hash,
-    std::uint32_t seq,
-    std::shared_ptr<NodeObject>& object)
-{
-    // See if the object is in cache
-    object = pCache_->fetch(hash);
-    if (object || nCache_->touch_if_exists(hash))
-        return true;
-    // Otherwise post a read
-    Database::asyncFetch(hash, seq, pCache_, nCache_);
-    return false;
-}
-
-void
-DatabaseNodeImp::tune(int size, std::chrono::seconds age)
-{
-    pCache_->setTargetSize(size);
-    pCache_->setTargetAge(age);
-    nCache_->setTargetSize(size);
-    nCache_->setTargetAge(age);
+    storeStats(1, nObj->getData().size());
 }
 
 void
 DatabaseNodeImp::sweep()
 {
-    pCache_->sweep();
-    nCache_->sweep();
+    if (cache_)
+        cache_->sweep();
+}
+
+std::shared_ptr<NodeObject>
+DatabaseNodeImp::fetchNodeObject(
+    uint256 const& hash,
+    std::uint32_t,
+    FetchReport& fetchReport)
+{
+    std::shared_ptr<NodeObject> nodeObject{
+        cache_ ? cache_->fetch(hash) : nullptr};
+    if (!nodeObject)
+    {
+        JLOG(j_.trace())
+            << "DatabaseNodeImp::fetchNodeObject - record not in cache";
+        Status status;
+
+        try
+        {
+            status = backend_->fetch(hash.data(), &nodeObject);
+        }
+        catch (std::exception const& e)
+        {
+            JLOG(j_.fatal()) << "Exception, " << e.what();
+            Rethrow();
+        }
+
+        switch (status)
+        {
+            case ok:
+                ++fetchHitCount_;
+                if (nodeObject)
+                {
+                    fetchSz_ += nodeObject->getData().size();
+                    if (cache_)
+                        cache_->canonicalize_replace_client(hash, nodeObject);
+                }
+                break;
+            case notFound:
+                break;
+            case dataCorrupt:
+                JLOG(j_.fatal()) << "Corrupt NodeObject #" << hash;
+                break;
+            default:
+                JLOG(j_.warn()) << "Unknown status=" << status;
+                break;
+        }
+    }
+    else
+    {
+        JLOG(j_.trace())
+            << "DatabaseNodeImp::fetchNodeObject - record in cache";
+    }
+
+    if (nodeObject)
+        fetchReport.wasFound = true;
+
+    return nodeObject;
+}
+
+std::vector<std::shared_ptr<NodeObject>>
+DatabaseNodeImp::fetchBatch(std::vector<uint256> const& hashes)
+{
+    std::vector<std::shared_ptr<NodeObject>> results{hashes.size()};
+    using namespace std::chrono;
+    auto const before = steady_clock::now();
+    std::unordered_map<uint256 const*, size_t> indexMap;
+    std::vector<uint256 const*> cacheMisses;
+    uint64_t hits = 0;
+    uint64_t fetches = 0;
+    for (size_t i = 0; i < hashes.size(); ++i)
+    {
+        auto const& hash = hashes[i];
+        // See if the object already exists in the cache
+        auto nObj = cache_ ? cache_->fetch(hash) : nullptr;
+        ++fetches;
+        if (!nObj)
+        {
+            // Try the database
+            indexMap[&hash] = i;
+            cacheMisses.push_back(&hash);
+        }
+        else
+        {
+            results[i] = nObj;
+            // It was in the cache.
+            ++hits;
+        }
+    }
+
+    JLOG(j_.debug()) << "DatabaseNodeImp::fetchBatch - cache hits = "
+                     << (hashes.size() - cacheMisses.size())
+                     << " - cache misses = " << cacheMisses.size();
+    auto dbResults = backend_->fetchBatch(cacheMisses).first;
+
+    for (size_t i = 0; i < dbResults.size(); ++i)
+    {
+        auto nObj = dbResults[i];
+        size_t index = indexMap[cacheMisses[i]];
+        results[index] = nObj;
+        auto const& hash = hashes[index];
+
+        if (nObj)
+        {
+            // Ensure all threads get the same object
+            if (cache_)
+                cache_->canonicalize_replace_client(hash, nObj);
+        }
+        else
+        {
+            JLOG(j_.error())
+                << "DatabaseNodeImp::fetchBatch - "
+                << "record not found in db or cache. hash = " << strHex(hash);
+        }
+    }
+
+    auto fetchDurationUs =
+        std::chrono::duration_cast<std::chrono::microseconds>(
+            steady_clock::now() - before)
+            .count();
+    updateFetchMetrics(fetches, hits, fetchDurationUs);
+    return results;
 }
 
 }  // namespace NodeStore

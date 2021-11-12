@@ -21,10 +21,9 @@
 #define RIPPLE_APP_MISC_SHAMAPSTORE_H_INCLUDED
 
 #include <ripple/app/ledger/Ledger.h>
-#include <ripple/core/Stoppable.h>
 #include <ripple/nodestore/Manager.h>
 #include <ripple/protocol/ErrorCodes.h>
-#include <boost/optional.hpp>
+#include <optional>
 
 namespace ripple {
 
@@ -34,25 +33,29 @@ class TransactionMaster;
  * class to create database, launch online delete thread, and
  * related SQLite database
  */
-class SHAMapStore : public Stoppable
+class SHAMapStore
 {
 public:
-    SHAMapStore(Stoppable& parent) : Stoppable("SHAMapStore", parent)
-    {
-    }
+    virtual ~SHAMapStore() = default;
 
     /** Called by LedgerMaster every time a ledger validates. */
     virtual void
     onLedgerClosed(std::shared_ptr<Ledger const> const& ledger) = 0;
 
     virtual void
+    start() = 0;
+
+    virtual void
     rendezvous() const = 0;
+
+    virtual void
+    stop() = 0;
 
     virtual std::uint32_t
     clampFetchDepth(std::uint32_t fetch_depth) const = 0;
 
     virtual std::unique_ptr<NodeStore::Database>
-    makeNodeStore(std::string const& name, std::int32_t readThreads) = 0;
+    makeNodeStore(std::int32_t readThreads) = 0;
 
     /** Highest ledger that may be deleted. */
     virtual LedgerIndex
@@ -92,7 +95,7 @@ public:
         @return The minimum ledger sequence to keep online based on the
             description above. If not set, then an unseated optional.
     */
-    virtual boost::optional<LedgerIndex>
+    virtual std::optional<LedgerIndex>
     minimumOnline() const = 0;
 };
 
@@ -101,7 +104,6 @@ public:
 std::unique_ptr<SHAMapStore>
 make_SHAMapStore(
     Application& app,
-    Stoppable& parent,
     NodeStore::Scheduler& scheduler,
     beast::Journal journal);
 }  // namespace ripple

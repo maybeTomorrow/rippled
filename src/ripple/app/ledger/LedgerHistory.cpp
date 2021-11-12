@@ -323,8 +323,8 @@ void
 LedgerHistory::handleMismatch(
     LedgerHash const& built,
     LedgerHash const& valid,
-    boost::optional<uint256> const& builtConsensusHash,
-    boost::optional<uint256> const& validatedConsensusHash,
+    std::optional<uint256> const& builtConsensusHash,
+    std::optional<uint256> const& validatedConsensusHash,
     Json::Value const& consensus)
 {
     assert(built != valid);
@@ -346,8 +346,8 @@ LedgerHistory::handleMismatch(
 
     if (auto stream = j_.debug())
     {
-        stream << "Built: " << getJson(*builtLedger);
-        stream << "Valid: " << getJson(*validLedger);
+        stream << "Built: " << getJson({*builtLedger, {}});
+        stream << "Valid: " << getJson({*validLedger, {}});
         stream << "Consensus: " << consensus;
     }
 
@@ -391,8 +391,8 @@ LedgerHistory::handleMismatch(
         JLOG(j_.error()) << "MISMATCH with " << builtTx.size() << " built and "
                          << validTx.size() << " valid transactions.";
 
-    JLOG(j_.error()) << "built\n" << getJson(*builtLedger);
-    JLOG(j_.error()) << "valid\n" << getJson(*validLedger);
+    JLOG(j_.error()) << "built\n" << getJson({*builtLedger, {}});
+    JLOG(j_.error()) << "valid\n" << getJson({*validLedger, {}});
 
     // Log all differences between built and valid ledgers
     auto b = builtTx.begin();
@@ -411,7 +411,7 @@ LedgerHistory::handleMismatch(
         }
         else
         {
-            if ((*b)->peekData() != (*v)->peekData())
+            if ((*b)->slice() != (*v)->slice())
             {
                 // Same transaction with different metadata
                 log_metadata_difference(
@@ -444,14 +444,14 @@ LedgerHistory::builtLedger(
 
     if (entry->validated && !entry->built)
     {
-        if (entry->validated.get() != hash)
+        if (entry->validated.value() != hash)
         {
-            JLOG(j_.error())
-                << "MISMATCH: seq=" << index
-                << " validated:" << entry->validated.get() << " then:" << hash;
+            JLOG(j_.error()) << "MISMATCH: seq=" << index
+                             << " validated:" << entry->validated.value()
+                             << " then:" << hash;
             handleMismatch(
                 hash,
-                entry->validated.get(),
+                entry->validated.value(),
                 consensusHash,
                 entry->validatedConsensusHash,
                 consensus);
@@ -471,7 +471,7 @@ LedgerHistory::builtLedger(
 void
 LedgerHistory::validatedLedger(
     std::shared_ptr<Ledger const> const& ledger,
-    boost::optional<uint256> const& consensusHash)
+    std::optional<uint256> const& consensusHash)
 {
     LedgerIndex index = ledger->info().seq;
     LedgerHash hash = ledger->info().hash;
@@ -484,17 +484,17 @@ LedgerHistory::validatedLedger(
 
     if (entry->built && !entry->validated)
     {
-        if (entry->built.get() != hash)
+        if (entry->built.value() != hash)
         {
             JLOG(j_.error())
-                << "MISMATCH: seq=" << index << " built:" << entry->built.get()
-                << " then:" << hash;
+                << "MISMATCH: seq=" << index
+                << " built:" << entry->built.value() << " then:" << hash;
             handleMismatch(
-                entry->built.get(),
+                entry->built.value(),
                 hash,
                 entry->builtConsensusHash,
                 consensusHash,
-                entry->consensus.get());
+                entry->consensus.value());
         }
         else
         {

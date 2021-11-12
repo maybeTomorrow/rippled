@@ -30,16 +30,8 @@
 
 namespace ripple {
 
-LoadManager::LoadManager(
-    Application& app,
-    Stoppable& parent,
-    beast::Journal journal)
-    : Stoppable("LoadManager", parent)
-    , app_(app)
-    , journal_(journal)
-    , deadLock_()
-    , armed_(false)
-    , stop_(false)
+LoadManager::LoadManager(Application& app, beast::Journal journal)
+    : app_(app), journal_(journal), deadLock_(), armed_(false)
 {
 }
 
@@ -47,7 +39,7 @@ LoadManager::~LoadManager()
 {
     try
     {
-        onStop();
+        stop();
     }
     catch (std::exception const& ex)
     {
@@ -78,12 +70,7 @@ LoadManager::resetDeadlockDetector()
 //------------------------------------------------------------------------------
 
 void
-LoadManager::onPrepare()
-{
-}
-
-void
-LoadManager::onStart()
+LoadManager::start()
 {
     JLOG(journal_.debug()) << "Starting";
     assert(!thread_.joinable());
@@ -92,18 +79,19 @@ LoadManager::onStart()
 }
 
 void
-LoadManager::onStop()
+LoadManager::stop()
 {
+    {
+        std::lock_guard lock(mutex_);
+        stop_ = true;
+        // There is at most one thread waiting on this condition.
+        cv_.notify_all();
+    }
     if (thread_.joinable())
     {
         JLOG(journal_.debug()) << "Stopping";
-        {
-            std::lock_guard sl(mutex_);
-            stop_ = true;
-        }
         thread_.join();
     }
-    stopped();
 }
 
 //------------------------------------------------------------------------------
@@ -114,19 +102,22 @@ LoadManager::run()
     beast::setCurrentThreadName("LoadManager");
 
     using namespace std::chrono_literals;
-    using clock_type = std::chrono::system_clock;
+    using clock_type = std::chrono::steady_clock;
 
     auto t = clock_type::now();
-    bool stop = false;
 
-    while (!(stop || isStopping()))
+    while (true)
     {
         {
+            t += 1s;
+            std::unique_lock sl(mutex_);
+            if (cv_.wait_until(sl, t, [this] { return stop_; }))
+            {
+                break;
+            }
             // Copy out shared data under a lock.  Use copies outside lock.
-            std::unique_lock<std::mutex> sl(mutex_);
             auto const deadLock = deadLock_;
             auto const armed = armed_;
-            stop = stop_;
             sl.unlock();
 
             // Measure the amount of time we have been deadlocked, in seconds.
@@ -197,30 +188,15 @@ LoadManager::run()
             // subscribe in NetworkOPs or Application.
             app_.getOPs().reportFeeChange();
         }
-
-        t += 1s;
-        auto const duration = t - clock_type::now();
-
-        if ((duration < 0s) || (duration > 1s))
-        {
-            JLOG(journal_.warn()) << "time jump";
-            t = clock_type::now();
-        }
-        else
-        {
-            alertable_sleep_until(t);
-        }
     }
-
-    stopped();
 }
 
 //------------------------------------------------------------------------------
 
 std::unique_ptr<LoadManager>
-make_LoadManager(Application& app, Stoppable& parent, beast::Journal journal)
+make_LoadManager(Application& app, beast::Journal journal)
 {
-    return std::unique_ptr<LoadManager>{new LoadManager{app, parent, journal}};
+    return std::unique_ptr<LoadManager>{new LoadManager{app, journal}};
 }
 
 }  // namespace ripple

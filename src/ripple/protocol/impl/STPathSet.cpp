@@ -23,7 +23,6 @@
 #include <ripple/basics/strHex.h>
 #include <ripple/protocol/STPathSet.h>
 #include <ripple/protocol/jss.h>
-#include <cstddef>
 
 namespace ripple {
 
@@ -156,7 +155,6 @@ Json::Value STPath::getJson(JsonOptions) const
         auto const iType = it.getNodeType();
 
         elem[jss::type] = iType;
-        elem[jss::type_hex] = strHex(iType);
 
         if (iType & STPathElement::typeAccount)
             elem[jss::account] = to_string(it.getAccountID());

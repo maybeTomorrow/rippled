@@ -24,7 +24,6 @@
 #include <ripple/app/tx/impl/ApplyContext.h>
 #include <ripple/basics/XRPAmount.h>
 #include <ripple/beast/utility/Journal.h>
-#include <boost/optional.hpp>
 
 namespace ripple {
 
@@ -80,7 +79,7 @@ public:
     operator=(PreclaimContext const&) = delete;
 };
 
-struct TxConsequences;
+class TxConsequences;
 struct PreflightResult;
 
 class Transactor
@@ -89,7 +88,7 @@ protected:
     ApplyContext& ctx_;
     beast::Journal const j_;
 
-    AccountID account_;
+    AccountID const account_;
     XRPAmount mPriorBalance;   // Balance before fees.
     XRPAmount mSourceBalance;  // Balance after fees.
 
@@ -99,6 +98,7 @@ protected:
     operator=(Transactor const&) = delete;
 
 public:
+    enum ConsequencesFactoryType { Normal, Blocker, Custom };
     /** Process the transaction. */
     std::pair<TER, bool>
     operator()();
@@ -126,7 +126,10 @@ public:
     */
 
     static NotTEC
-    checkSeq(PreclaimContext const& ctx);
+    checkSeqProxy(ReadView const& view, STTx const& tx, beast::Journal j);
+
+    static NotTEC
+    checkPriorTxAndLastLedger(PreclaimContext const& ctx);
 
     static TER
     checkFee(PreclaimContext const& ctx, FeeUnit64 baseFee);
@@ -138,18 +141,6 @@ public:
     static FeeUnit64
     calculateBaseFee(ReadView const& view, STTx const& tx);
 
-    static bool
-    affectsSubsequentTransactionAuth(STTx const& tx)
-    {
-        return false;
-    }
-
-    static XRPAmount
-    calculateFeePaid(STTx const& tx);
-
-    static XRPAmount
-    calculateMaxSpend(STTx const& tx);
-
     static TER
     preclaim(PreclaimContext const& ctx)
     {
@@ -158,6 +149,14 @@ public:
         return tesSUCCESS;
     }
     /////////////////////////////////////////////////////
+
+    // Interface used by DeleteAccount
+    static TER
+    ticketDelete(
+        ApplyView& view,
+        AccountID const& account,
+        uint256 const& ticketIndex,
+        beast::Journal j);
 
 protected:
     TER
@@ -188,11 +187,11 @@ protected:
         ApplyFlags flags);
 
 private:
-    XRPAmount
+    std::pair<TER, XRPAmount>
     reset(XRPAmount fee);
 
-    void
-    setSeq();
+    TER
+    consumeSeqProxy(SLE::pointer const& sleAccount);
     TER
     payFee();
     static NotTEC

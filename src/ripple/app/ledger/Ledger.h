@@ -24,14 +24,13 @@
 #include <ripple/beast/utility/Journal.h>
 #include <ripple/core/TimeKeeper.h>
 #include <ripple/ledger/CachedView.h>
-#include <ripple/ledger/TxMeta.h>
 #include <ripple/ledger/View.h>
 #include <ripple/protocol/Book.h>
 #include <ripple/protocol/Indexes.h>
 #include <ripple/protocol/STLedgerEntry.h>
 #include <ripple/protocol/Serializer.h>
+#include <ripple/protocol/TxMeta.h>
 #include <ripple/shamap/SHAMap.h>
-#include <boost/optional.hpp>
 #include <mutex>
 
 namespace ripple {
@@ -80,12 +79,6 @@ class Ledger final : public std::enable_shared_from_this<Ledger>,
                      public CountedObject<Ledger>
 {
 public:
-    static char const*
-    getCountedObjectName()
-    {
-        return "Ledger";
-    }
-
     Ledger(Ledger const&) = delete;
     Ledger&
     operator=(Ledger const&) = delete;
@@ -157,6 +150,12 @@ public:
         return info_;
     }
 
+    void
+    setLedgerInfo(LedgerInfo const& info)
+    {
+        info_ = info;
+    }
+
     Fees const&
     fees() const override
     {
@@ -172,8 +171,11 @@ public:
     bool
     exists(Keylet const& k) const override;
 
-    boost::optional<uint256>
-    succ(uint256 const& key, boost::optional<uint256> const& last = boost::none)
+    bool
+    exists(uint256 const& key) const;
+
+    std::optional<uint256>
+    succ(uint256 const& key, std::optional<uint256> const& last = std::nullopt)
         const override;
 
     std::shared_ptr<SLE const>
@@ -204,7 +206,7 @@ public:
     // DigestAwareReadView
     //
 
-    boost::optional<digest_type>
+    std::optional<digest_type>
     digest(key_type const& key) const override;
 
     //
@@ -216,6 +218,9 @@ public:
 
     void
     rawInsert(std::shared_ptr<SLE> const& sle) override;
+
+    void
+    rawErase(uint256 const& key);
 
     void
     rawReplace(std::shared_ptr<SLE> const& sle) override;
@@ -236,6 +241,19 @@ public:
         std::shared_ptr<Serializer const> const& txn,
         std::shared_ptr<Serializer const> const& metaData) override;
 
+    // Insert the transaction, and return the hash of the SHAMap leaf node
+    // holding the transaction. The hash can be used to fetch the transaction
+    // directly, instead of traversing the SHAMap
+    // @param key transaction ID
+    // @param txn transaction
+    // @param metaData transaction metadata
+    // @return hash of SHAMap leaf node that holds the transaction
+    uint256
+    rawTxInsertWithHash(
+        uint256 const& key,
+        std::shared_ptr<Serializer const> const& txn,
+        std::shared_ptr<Serializer const> const& metaData);
+
     //--------------------------------------------------------------------------
 
     void
@@ -252,7 +270,7 @@ public:
         Config const& config);
 
     void
-    setImmutable(Config const& config);
+    setImmutable(Config const& config, bool rehash = true);
 
     bool
     isImmutable() const
@@ -322,7 +340,7 @@ public:
     walkLedger(beast::Journal j) const;
 
     bool
-    assertSane(beast::Journal ledgerJ) const;
+    assertSensible(beast::Journal ledgerJ) const;
 
     void
     invariants() const;
@@ -342,7 +360,7 @@ public:
      *
      * @return the public key if any
      */
-    boost::optional<PublicKey>
+    std::optional<PublicKey>
     validatorToDisable() const;
 
     /**
@@ -350,7 +368,7 @@ public:
      *
      * @return the public key if any
      */
-    boost::optional<PublicKey>
+    std::optional<PublicKey>
     validatorToReEnable() const;
 
     /**
@@ -369,15 +387,15 @@ public:
     bool
     isVotingLedger() const;
 
+    std::shared_ptr<SLE>
+    peek(Keylet const& k) const;
+
 private:
     class sles_iter_impl;
     class txs_iter_impl;
 
     bool
     setup(Config const& config);
-
-    std::shared_ptr<SLE>
-    peek(Keylet const& k) const;
 
     bool mImmutable;
 
@@ -413,30 +431,44 @@ pendSaveValidated(
     bool isSynchronous,
     bool isCurrent);
 
-extern std::shared_ptr<Ledger>
+std::shared_ptr<Ledger>
+loadLedgerHelper(LedgerInfo const& sinfo, Application& app, bool acquire);
+
+std::shared_ptr<Ledger>
 loadByIndex(std::uint32_t ledgerIndex, Application& app, bool acquire = true);
 
-extern std::tuple<std::shared_ptr<Ledger>, std::uint32_t, uint256>
-loadLedgerHelper(
-    std::string const& sqlSuffix,
-    Application& app,
-    bool acquire = true);
-
-extern std::shared_ptr<Ledger>
+std::shared_ptr<Ledger>
 loadByHash(uint256 const& ledgerHash, Application& app, bool acquire = true);
 
-extern uint256
-getHashByIndex(std::uint32_t index, Application& app);
+// Fetch the ledger with the highest sequence contained in the database
+extern std::tuple<std::shared_ptr<Ledger>, std::uint32_t, uint256>
+getLatestLedger(Application& app);
 
-extern bool
-getHashesByIndex(
-    std::uint32_t index,
-    uint256& ledgerHash,
-    uint256& parentHash,
-    Application& app);
+// *** Reporting Mode Only ***
+// Fetch all of the transactions contained in ledger from the nodestore.
+// The transactions are fetched directly as a batch, instead of traversing the
+// transaction SHAMap. Fetching directly is significantly faster than
+// traversing, as there are less database reads, and all of the reads can
+// executed concurrently. This function only works in reporting mode.
+// @param ledger the ledger for which to fetch the contained transactions
+// @param app reference to the Application
+// @return vector of (transaction, metadata) pairs
+extern std::vector<
+    std::pair<std::shared_ptr<STTx const>, std::shared_ptr<STObject const>>>
+flatFetchTransactions(ReadView const& ledger, Application& app);
 
-extern std::map<std::uint32_t, std::pair<uint256, uint256>>
-getHashesByIndex(std::uint32_t minSeq, std::uint32_t maxSeq, Application& app);
+// *** Reporting Mode Only ***
+// For each nodestore hash, fetch the transaction.
+// The transactions are fetched directly as a batch, instead of traversing the
+// transaction SHAMap. Fetching directly is significantly faster than
+// traversing, as there are less database reads, and all of the reads can
+// executed concurrently. This function only works in reporting mode.
+// @param nodestoreHashes hashes of the transactions to fetch
+// @param app reference to the Application
+// @return vector of (transaction, metadata) pairs
+extern std::vector<
+    std::pair<std::shared_ptr<STTx const>, std::shared_ptr<STObject const>>>
+flatFetchTransactions(Application& app, std::vector<uint256>& nodestoreHashes);
 
 /** Deserialize a SHAMapItem containing a single STTx
 
@@ -458,6 +490,9 @@ deserializeTx(SHAMapItem const& item);
 */
 std::pair<std::shared_ptr<STTx const>, std::shared_ptr<STObject const>>
 deserializeTxPlusMeta(SHAMapItem const& item);
+
+uint256
+calculateLedgerHash(LedgerInfo const& info);
 
 }  // namespace ripple
 

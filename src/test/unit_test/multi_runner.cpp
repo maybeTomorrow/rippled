@@ -27,12 +27,13 @@
 #include <iomanip>
 #include <iostream>
 #include <sstream>
+#include <vector>
 
 namespace ripple {
 namespace test {
 
 extern void
-incPorts();
+incPorts(int times);
 
 namespace detail {
 
@@ -180,6 +181,22 @@ void
 multi_runner_base<IsParent>::inner::any_failed(bool v)
 {
     any_failed_ = any_failed_ || v;
+}
+
+template <bool IsParent>
+std::size_t
+multi_runner_base<IsParent>::inner::tests() const
+{
+    std::lock_guard l{m_};
+    return results_.total;
+}
+
+template <bool IsParent>
+std::size_t
+multi_runner_base<IsParent>::inner::suites() const
+{
+    std::lock_guard l{m_};
+    return results_.suites;
 }
 
 template <bool IsParent>
@@ -349,6 +366,30 @@ multi_runner_base<IsParent>::message_queue_send(
 }
 
 template <bool IsParent>
+std::size_t
+multi_runner_base<IsParent>::tests() const
+{
+    return inner_->tests();
+}
+
+template <bool IsParent>
+std::size_t
+multi_runner_base<IsParent>::suites() const
+{
+    return inner_->suites();
+}
+
+template <bool IsParent>
+void
+multi_runner_base<IsParent>::add_failures(std::size_t failures)
+{
+    results results;
+    results.failed += failures;
+    add(results);
+    any_failed(failures != 0);
+}
+
+template <bool IsParent>
 constexpr const char* multi_runner_base<IsParent>::shared_mem_name_;
 template <bool IsParent>
 constexpr const char* multi_runner_base<IsParent>::message_queue_name_;
@@ -445,6 +486,24 @@ multi_runner_parent::any_failed() const
     return multi_runner_base<true>::any_failed();
 }
 
+std::size_t
+multi_runner_parent::tests() const
+{
+    return multi_runner_base<true>::tests();
+}
+
+std::size_t
+multi_runner_parent::suites() const
+{
+    return multi_runner_base<true>::suites();
+}
+
+void
+multi_runner_parent::add_failures(std::size_t failures)
+{
+    multi_runner_base<true>::add_failures(failures);
+}
+
 //------------------------------------------------------------------------------
 
 multi_runner_child::multi_runner_child(
@@ -457,8 +516,7 @@ multi_runner_child::multi_runner_child(
     , print_log_{!quiet || print_log}
 {
     // incPort twice (2*jobIndex_) because some tests need two envs
-    for (std::size_t i = 0; i < 2 * job_index_; ++i)
-        test::incPorts();
+    test::incPorts(2 * job_index_);
 
     if (num_jobs_ > 1)
     {
@@ -499,6 +557,25 @@ multi_runner_child::~multi_runner_child()
     }
 
     add(results_);
+}
+
+std::size_t
+multi_runner_child::tests() const
+{
+    return results_.total;
+}
+
+std::size_t
+multi_runner_child::suites() const
+{
+    return results_.suites;
+}
+
+void
+multi_runner_child::add_failures(std::size_t failures)
+{
+    results_.failed += failures;
+    any_failed(failures != 0);
 }
 
 void

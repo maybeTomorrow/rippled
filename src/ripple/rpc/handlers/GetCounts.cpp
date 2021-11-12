@@ -22,8 +22,8 @@
 #include <ripple/app/ledger/LedgerMaster.h>
 #include <ripple/app/main/Application.h>
 #include <ripple/app/misc/NetworkOPs.h>
+#include <ripple/app/rdb/backend/RelationalDBInterfaceSqlite.h>
 #include <ripple/basics/UptimeClock.h>
-#include <ripple/core/DatabaseCon.h>
 #include <ripple/json/json_value.h>
 #include <ripple/ledger/CachedSLEs.h>
 #include <ripple/net/RPCErr.h>
@@ -73,25 +73,34 @@ getCountsJson(Application& app, int minObjectCount)
         ret[k] = v;
     }
 
-    int dbKB = getKBUsedAll(app.getLedgerDB().getSession());
-
-    if (dbKB > 0)
-        ret[jss::dbKBTotal] = dbKB;
-
-    dbKB = getKBUsedDB(app.getLedgerDB().getSession());
-
-    if (dbKB > 0)
-        ret[jss::dbKBLedger] = dbKB;
-
-    dbKB = getKBUsedDB(app.getTxnDB().getSession());
-
-    if (dbKB > 0)
-        ret[jss::dbKBTransaction] = dbKB;
-
+    if (!app.config().reporting() && app.config().useTxTables())
     {
-        std::size_t c = app.getOPs().getLocalTxCount();
-        if (c > 0)
-            ret[jss::local_txs] = static_cast<Json::UInt>(c);
+        auto dbKB = dynamic_cast<RelationalDBInterfaceSqlite*>(
+                        &app.getRelationalDBInterface())
+                        ->getKBUsedAll();
+
+        if (dbKB > 0)
+            ret[jss::dbKBTotal] = dbKB;
+
+        dbKB = dynamic_cast<RelationalDBInterfaceSqlite*>(
+                   &app.getRelationalDBInterface())
+                   ->getKBUsedLedger();
+
+        if (dbKB > 0)
+            ret[jss::dbKBLedger] = dbKB;
+
+        dbKB = dynamic_cast<RelationalDBInterfaceSqlite*>(
+                   &app.getRelationalDBInterface())
+                   ->getKBUsedTransaction();
+
+        if (dbKB > 0)
+            ret[jss::dbKBTransaction] = dbKB;
+
+        {
+            std::size_t c = app.getOPs().getLocalTxCount();
+            if (c > 0)
+                ret[jss::local_txs] = static_cast<Json::UInt>(c);
+        }
     }
 
     ret[jss::write_load] = app.getNodeStore().getWriteLoad();
@@ -99,7 +108,6 @@ getCountsJson(Application& app, int minObjectCount)
     ret[jss::historical_perminute] =
         static_cast<int>(app.getInboundLedgers().fetchRate());
     ret[jss::SLE_hit_rate] = app.cachedSLEs().rate();
-    ret[jss::node_hit_rate] = app.getNodeStore().getCacheHitRate();
     ret[jss::ledger_hit_rate] = app.getLedgerMaster().getCacheHitRate();
     ret[jss::AL_hit_rate] = app.getAcceptedLedgerCache().getHitRate();
 
@@ -120,12 +128,6 @@ getCountsJson(Application& app, int minObjectCount)
     textTime(uptime, s, "second", 1s);
     ret[jss::uptime] = uptime;
 
-    ret[jss::node_writes] = app.getNodeStore().getStoreCount();
-    ret[jss::node_reads_total] = app.getNodeStore().getFetchTotalCount();
-    ret[jss::node_reads_hit] = app.getNodeStore().getFetchHitCount();
-    ret[jss::node_written_bytes] = app.getNodeStore().getStoreSize();
-    ret[jss::node_read_bytes] = app.getNodeStore().getFetchSize();
-
     if (auto shardStore = app.getShardStore())
     {
         auto shardFamily{dynamic_cast<ShardFamily*>(app.getShardFamily())};
@@ -136,12 +138,16 @@ getCountsJson(Application& app, int minObjectCount)
         jv[jss::treenode_cache_size] = cacheSz;
         jv[jss::treenode_track_size] = trackSz;
         ret[jss::write_load] = shardStore->getWriteLoad();
-        ret[jss::node_hit_rate] = shardStore->getCacheHitRate();
-        jv[jss::node_writes] = shardStore->getStoreCount();
+        jv[jss::node_writes] = std::to_string(shardStore->getStoreCount());
         jv[jss::node_reads_total] = shardStore->getFetchTotalCount();
         jv[jss::node_reads_hit] = shardStore->getFetchHitCount();
-        jv[jss::node_written_bytes] = shardStore->getStoreSize();
+        jv[jss::node_written_bytes] =
+            std::to_string(shardStore->getStoreSize());
         jv[jss::node_read_bytes] = shardStore->getFetchSize();
+    }
+    else
+    {
+        app.getNodeStore().getCountsJson(ret);
     }
 
     return ret;

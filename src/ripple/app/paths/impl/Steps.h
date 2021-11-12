@@ -27,7 +27,7 @@
 #include <ripple/protocol/TER.h>
 
 #include <boost/container/flat_set.hpp>
-#include <boost/optional.hpp>
+#include <optional>
 
 namespace ripple {
 class PaymentSandbox;
@@ -121,32 +121,32 @@ public:
        Amount of currency computed coming into the Step the last time the
        step ran in reverse.
     */
-    virtual boost::optional<EitherAmount>
+    virtual std::optional<EitherAmount>
     cachedIn() const = 0;
 
     /**
        Amount of currency computed coming out of the Step the last time the
        step ran in reverse.
     */
-    virtual boost::optional<EitherAmount>
+    virtual std::optional<EitherAmount>
     cachedOut() const = 0;
 
     /**
        If this step is DirectStepI (IOU->IOU direct step), return the src
        account. This is needed for checkNoRipple.
     */
-    virtual boost::optional<AccountID>
+    virtual std::optional<AccountID>
     directStepSrcAcct() const
     {
-        return boost::none;
+        return std::nullopt;
     }
 
     // for debugging. Return the src and dst accounts for a direct step
     // For XRP endpoints, one of src or dst will be the root account
-    virtual boost::optional<std::pair<AccountID, AccountID>>
+    virtual std::optional<std::pair<AccountID, AccountID>>
     directStepAccts() const
     {
-        return boost::none;
+        return std::nullopt;
     }
 
     /**
@@ -175,7 +175,7 @@ public:
 
        @param v view to query the ledger state from
        @param prevStepDir Set to DebtDirection::redeems if the previous step redeems.
-       @return A pair. The first element is the upper bound of quality for the step, or boost::none if the
+       @return A pair. The first element is the upper bound of quality for the step, or std::nullopt if the
        step is dry. The second element will be set to DebtDirection::redeems if this steps redeems,
        DebtDirection:issues if this step issues.
        @note it is an upper bound because offers on the books may be unfunded.
@@ -185,16 +185,29 @@ public:
        it should be a good estimate for the actual quality.
      */
     // clang-format on
-    virtual std::pair<boost::optional<Quality>, DebtDirection>
+    virtual std::pair<std::optional<Quality>, DebtDirection>
     qualityUpperBound(ReadView const& v, DebtDirection prevStepDir) const = 0;
+
+    /** Return the number of offers consumed or partially consumed the last time
+        the step ran, including expired and unfunded offers.
+
+        N.B. This this not the total number offers consumed by this step for the
+        entire payment, it is only the number the last time it ran. Offers may
+        be partially consumed multiple times during a payment.
+     */
+    virtual std::uint32_t
+    offersUsed() const
+    {
+        return 0;
+    }
 
     /**
        If this step is a BookStep, return the book.
     */
-    virtual boost::optional<Book>
+    virtual std::optional<Book>
     bookStepBook() const
     {
-        return boost::none;
+        return std::nullopt;
     }
 
     /**
@@ -281,6 +294,18 @@ private:
 
 /// @cond INTERNAL
 using Strand = std::vector<std::unique_ptr<Step>>;
+
+inline std::uint32_t
+offersUsed(Strand const& strand)
+{
+    std::uint32_t r = 0;
+    for (auto const& step : strand)
+    {
+        if (step)
+            r += step->offersUsed();
+    }
+    return r;
+}
 /// @endcond
 
 /// @cond INTERNAL
@@ -314,7 +339,7 @@ normalizePath(
     AccountID const& src,
     AccountID const& dst,
     Issue const& deliver,
-    boost::optional<Issue> const& sendMaxIssue,
+    std::optional<Issue> const& sendMaxIssue,
     STPath const& path);
 
 /**
@@ -345,8 +370,8 @@ toStrand(
     AccountID const& src,
     AccountID const& dst,
     Issue const& deliver,
-    boost::optional<Quality> const& limitQuality,
-    boost::optional<Issue> const& sendMaxIssue,
+    std::optional<Quality> const& limitQuality,
+    std::optional<Issue> const& sendMaxIssue,
     STPath const& path,
     bool ownerPaysTransferFee,
     bool offerCrossing,
@@ -382,8 +407,8 @@ toStrands(
     AccountID const& src,
     AccountID const& dst,
     Issue const& deliver,
-    boost::optional<Quality> const& limitQuality,
-    boost::optional<Issue> const& sendMax,
+    std::optional<Quality> const& limitQuality,
+    std::optional<Issue> const& sendMax,
     STPathSet const& paths,
     bool addDefaultPath,
     bool ownerPaysTransferFee,
@@ -471,11 +496,11 @@ checkNear(XRPAmount const& expected, XRPAmount const& actual);
  */
 struct StrandContext
 {
-    ReadView const& view;       ///< Current ReadView
-    AccountID const strandSrc;  ///< Strand source account
-    AccountID const strandDst;  ///< Strand destination account
-    Issue const strandDeliver;  ///< Issue strand delivers
-    boost::optional<Quality> const limitQuality;  ///< Worst accepted quality
+    ReadView const& view;                       ///< Current ReadView
+    AccountID const strandSrc;                  ///< Strand source account
+    AccountID const strandDst;                  ///< Strand destination account
+    Issue const strandDeliver;                  ///< Issue strand delivers
+    std::optional<Quality> const limitQuality;  ///< Worst accepted quality
     bool const isFirst;               ///< true if Step is first in Strand
     bool const isLast = false;        ///< true if Step is last in Strand
     bool const ownerPaysTransferFee;  ///< true if owner, not sender, pays fee
@@ -507,7 +532,7 @@ struct StrandContext
         AccountID const& strandSrc_,
         AccountID const& strandDst_,
         Issue const& strandDeliver_,
-        boost::optional<Quality> const& limitQuality_,
+        std::optional<Quality> const& limitQuality_,
         bool isLast_,
         bool ownerPaysTransferFee_,
         bool offerCrossing_,

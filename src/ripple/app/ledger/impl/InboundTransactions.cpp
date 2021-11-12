@@ -58,21 +58,19 @@ public:
     }
 };
 
-class InboundTransactionsImp : public InboundTransactions, public Stoppable
+class InboundTransactionsImp : public InboundTransactions
 {
 public:
-    Application& app_;
-
     InboundTransactionsImp(
         Application& app,
-        Stoppable& parent,
         beast::insight::Collector::ptr const& collector,
-        std::function<void(std::shared_ptr<SHAMap> const&, bool)> gotSet)
-        : Stoppable("InboundTransactions", parent)
-        , app_(app)
+        std::function<void(std::shared_ptr<SHAMap> const&, bool)> gotSet,
+        std::unique_ptr<PeerSetBuilder> peerSetBuilder)
+        : app_(app)
         , m_seq(0)
         , m_zeroSet(m_map[uint256()])
         , m_gotSet(std::move(gotSet))
+        , m_peerSetBuilder(std::move(peerSetBuilder))
     {
         m_zeroSet.mSet = std::make_shared<SHAMap>(
             SHAMapType::TRANSACTION, uint256(), app_.getNodeFamily());
@@ -116,10 +114,11 @@ public:
                 return it->second.mSet;
             }
 
-            if (!acquire || isStopping())
+            if (!acquire || stopping_)
                 return std::shared_ptr<SHAMap>();
 
-            ta = std::make_shared<TransactionAcquire>(app_, hash);
+            ta = std::make_shared<TransactionAcquire>(
+                app_, hash, m_peerSetBuilder->build());
 
             auto& obj = m_map[hash];
             obj.mAcquire = ta;
@@ -159,15 +158,21 @@ public:
         std::list<Blob> nodeData;
         for (auto const& node : packet.nodes())
         {
-            if (!node.has_nodeid() || !node.has_nodedata() ||
-                (node.nodeid().size() != 33))
+            if (!node.has_nodeid() || !node.has_nodedata())
             {
                 peer->charge(Resource::feeInvalidRequest);
                 return;
             }
 
-            nodeIDs.emplace_back(
-                node.nodeid().data(), static_cast<int>(node.nodeid().size()));
+            auto const id = deserializeSHAMapNodeID(node.nodeid());
+
+            if (!id)
+            {
+                peer->charge(Resource::feeBadData);
+                return;
+            }
+
+            nodeIDs.emplace_back(*id);
             nodeData.emplace_back(
                 node.nodedata().begin(), node.nodedata().end());
         }
@@ -233,20 +238,21 @@ public:
     }
 
     void
-    onStop() override
+    stop() override
     {
         std::lock_guard lock(mLock);
-
+        stopping_ = true;
         m_map.clear();
-
-        stopped();
     }
 
 private:
     using MapType = hash_map<uint256, InboundTransactionSet>;
 
+    Application& app_;
+
     std::recursive_mutex mLock;
 
+    bool stopping_{false};
     MapType m_map;
     std::uint32_t m_seq;
 
@@ -254,6 +260,8 @@ private:
     InboundTransactionSet& m_zeroSet;
 
     std::function<void(std::shared_ptr<SHAMap> const&, bool)> m_gotSet;
+
+    std::unique_ptr<PeerSetBuilder> m_peerSetBuilder;
 };
 
 //------------------------------------------------------------------------------
@@ -263,12 +271,11 @@ InboundTransactions::~InboundTransactions() = default;
 std::unique_ptr<InboundTransactions>
 make_InboundTransactions(
     Application& app,
-    Stoppable& parent,
     beast::insight::Collector::ptr const& collector,
     std::function<void(std::shared_ptr<SHAMap> const&, bool)> gotSet)
 {
     return std::make_unique<InboundTransactionsImp>(
-        app, parent, collector, std::move(gotSet));
+        app, collector, std::move(gotSet), make_PeerSetBuilder(app));
 }
 
 }  // namespace ripple

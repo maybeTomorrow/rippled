@@ -40,6 +40,8 @@ class DatabaseDownloader_test : public beast::unit_test::suite
             env.app().getIOService(),
             list,
             env.timeKeeper().now() + std::chrono::seconds{3600},
+            // No future VLs
+            {},
             ssl);
     }
 
@@ -80,17 +82,20 @@ class DatabaseDownloader_test : public beast::unit_test::suite
     {
         test::StreamSink sink_;
         beast::Journal journal_;
-        // The DatabaseDownloader must be created as shared_ptr
-        // because it uses shared_from_this
         std::shared_ptr<DatabaseDownloader> ptr_;
 
         Downloader(jtx::Env& env)
             : journal_{sink_}
-            , ptr_{std::make_shared<DatabaseDownloader>(
+            , ptr_{make_DatabaseDownloader(
                   env.app().getIOService(),
-                  journal_,
-                  env.app().config())}
+                  env.app().config(),
+                  journal_)}
         {
+        }
+
+        ~Downloader()
+        {
+            ptr_->stop();
         }
 
         DatabaseDownloader*

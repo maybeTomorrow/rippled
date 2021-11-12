@@ -55,6 +55,7 @@ public:
     createInstance(
         size_t keyBytes,
         Section const& keyValues,
+        std::size_t burstSize,
         Scheduler& scheduler,
         beast::Journal journal) override;
 
@@ -88,9 +89,8 @@ public:
     MemoryBackend(
         size_t keyBytes,
         Section const& keyValues,
-        Scheduler& scheduler,
         beast::Journal journal)
-        : name_(get<std::string>(keyValues, "path")), journal_(journal)
+        : name_(get(keyValues, "path")), journal_(journal)
     {
         boost::ignore_unused(journal_);  // Keep unused journal_ just in case.
         if (name_.empty())
@@ -112,6 +112,12 @@ public:
     open(bool createIfMissing) override
     {
         db_ = &memoryFactory.open(name_);
+    }
+
+    bool
+    isOpen() override
+    {
+        return static_cast<bool>(db_);
     }
 
     void
@@ -140,17 +146,22 @@ public:
         return ok;
     }
 
-    bool
-    canFetchBatch() override
+    std::pair<std::vector<std::shared_ptr<NodeObject>>, Status>
+    fetchBatch(std::vector<uint256 const*> const& hashes) override
     {
-        return false;
-    }
+        std::vector<std::shared_ptr<NodeObject>> results;
+        results.reserve(hashes.size());
+        for (auto const& h : hashes)
+        {
+            std::shared_ptr<NodeObject> nObj;
+            Status status = fetch(h->begin(), &nObj);
+            if (status != ok)
+                results.push_back({});
+            else
+                results.push_back(nObj);
+        }
 
-    std::vector<std::shared_ptr<NodeObject>>
-    fetchBatch(std::size_t n, void const* const* keys) override
-    {
-        Throw<std::runtime_error>("pure virtual called");
-        return {};
+        return {results, ok};
     }
 
     void
@@ -169,6 +180,11 @@ public:
     }
 
     void
+    sync() override
+    {
+    }
+
+    void
     for_each(std::function<void(std::shared_ptr<NodeObject>)> f) override
     {
         assert(db_);
@@ -184,11 +200,6 @@ public:
 
     void
     setDeletePath() override
-    {
-    }
-
-    void
-    verify() override
     {
     }
 
@@ -221,11 +232,11 @@ std::unique_ptr<Backend>
 MemoryFactory::createInstance(
     size_t keyBytes,
     Section const& keyValues,
+    std::size_t,
     Scheduler& scheduler,
     beast::Journal journal)
 {
-    return std::make_unique<MemoryBackend>(
-        keyBytes, keyValues, scheduler, journal);
+    return std::make_unique<MemoryBackend>(keyBytes, keyValues, journal);
 }
 
 }  // namespace NodeStore

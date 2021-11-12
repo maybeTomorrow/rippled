@@ -20,7 +20,9 @@
 #include <ripple/app/consensus/RCLValidations.h>
 #include <ripple/app/ledger/InboundLedgers.h>
 #include <ripple/app/ledger/InboundTransactions.h>
+#include <ripple/app/ledger/LedgerCleaner.h>
 #include <ripple/app/ledger/LedgerMaster.h>
+#include <ripple/app/ledger/LedgerReplayer.h>
 #include <ripple/app/ledger/LedgerToJson.h>
 #include <ripple/app/ledger/OpenLedger.h>
 #include <ripple/app/ledger/OrderBookDB.h>
@@ -33,6 +35,7 @@
 #include <ripple/app/main/LoadManager.h>
 #include <ripple/app/main/NodeIdentity.h>
 #include <ripple/app/main/NodeStoreScheduler.h>
+#include <ripple/app/main/Tuning.h>
 #include <ripple/app/misc/AmendmentTable.h>
 #include <ripple/app/misc/HashRouter.h>
 #include <ripple/app/misc/LoadFeeTrack.h>
@@ -42,6 +45,9 @@
 #include <ripple/app/misc/ValidatorKeys.h>
 #include <ripple/app/misc/ValidatorSite.h>
 #include <ripple/app/paths/PathRequests.h>
+#include <ripple/app/rdb/RelationalDBInterface_global.h>
+#include <ripple/app/rdb/backend/RelationalDBInterfacePostgres.h>
+#include <ripple/app/reporting/ReportingETL.h>
 #include <ripple/app/tx/apply.h>
 #include <ripple/basics/ByteUtilities.h>
 #include <ripple/basics/PerfLog.h>
@@ -50,12 +56,12 @@
 #include <ripple/beast/asio/io_latency_probe.h>
 #include <ripple/beast/core/LexicalCast.h>
 #include <ripple/core/DatabaseCon.h>
-#include <ripple/core/Stoppable.h>
 #include <ripple/json/json_reader.h>
 #include <ripple/nodestore/DatabaseShard.h>
 #include <ripple/nodestore/DummyScheduler.h>
 #include <ripple/overlay/Cluster.h>
 #include <ripple/overlay/PeerReservationTable.h>
+#include <ripple/overlay/PeerSet.h>
 #include <ripple/overlay/make_Overlay.h>
 #include <ripple/protocol/BuildInfo.h>
 #include <ripple/protocol/Feature.h>
@@ -71,15 +77,21 @@
 #include <boost/asio/steady_timer.hpp>
 #include <boost/system/error_code.hpp>
 
+#include <date/date.h>
+
 #include <condition_variable>
 #include <cstring>
 #include <iostream>
+#include <limits>
 #include <mutex>
+#include <optional>
+#include <utility>
+#include <variant>
 
 namespace ripple {
 
 // VFALCO TODO Move the function definitions into the class declaration
-class ApplicationImp : public Application, public RootStoppable, public BasicApp
+class ApplicationImp : public Application, public BasicApp
 {
 private:
     class io_latency_sampler
@@ -114,7 +126,7 @@ private:
         operator()(Duration const& elapsed)
         {
             using namespace std::chrono;
-            auto const lastSample = date::ceil<milliseconds>(elapsed);
+            auto const lastSample = ceil<milliseconds>(elapsed);
 
             lastSample_ = lastSample;
 
@@ -158,23 +170,21 @@ public:
     // Required by the SHAMapStore
     TransactionMaster m_txMaster;
 
+    std::unique_ptr<CollectorManager> m_collectorManager;
+    std::unique_ptr<JobQueue> m_jobQueue;
     NodeStoreScheduler m_nodeStoreScheduler;
     std::unique_ptr<SHAMapStore> m_shaMapStore;
     PendingSaves pendingSaves_;
     AccountIDCache accountIDCache_;
-    boost::optional<OpenLedger> openLedger_;
+    std::optional<OpenLedger> openLedger_;
 
-    // These are not Stoppable-derived
     NodeCache m_tempNodeCache;
-    std::unique_ptr<CollectorManager> m_collectorManager;
     CachedSLEs cachedSLEs_;
     std::pair<PublicKey, SecretKey> nodeIdentity_;
     ValidatorKeys const validatorKeys_;
 
     std::unique_ptr<Resource::Manager> m_resourceManager;
 
-    // These are Stoppable-related
-    std::unique_ptr<JobQueue> m_jobQueue;
     std::unique_ptr<NodeStore::Database> m_nodeStore;
     NodeFamily nodeFamily_;
     std::unique_ptr<NodeStore::DatabaseShard> shardStore_;
@@ -184,8 +194,10 @@ public:
     OrderBookDB m_orderBookDB;
     std::unique_ptr<PathRequests> m_pathRequests;
     std::unique_ptr<LedgerMaster> m_ledgerMaster;
+    std::unique_ptr<LedgerCleaner> ledgerCleaner_;
     std::unique_ptr<InboundLedgers> m_inboundLedgers;
     std::unique_ptr<InboundTransactions> m_inboundTransactions;
+    std::unique_ptr<LedgerReplayer> m_ledgerReplayer;
     TaggedCache<uint256, AcceptedLedger> m_acceptedLedgerCache;
     std::unique_ptr<NetworkOPs> m_networkOPs;
     std::unique_ptr<Cluster> cluster_;
@@ -204,18 +216,15 @@ public:
     ClosureCounter<void, boost::system::error_code const&> waitHandlerCounter_;
     boost::asio::steady_timer sweepTimer_;
     boost::asio::steady_timer entropyTimer_;
-    bool startTimers_;
 
-    std::unique_ptr<DatabaseCon> mTxnDB;
-    std::unique_ptr<DatabaseCon> mLedgerDB;
+    std::unique_ptr<RelationalDBInterface> mRelationalDBInterface;
     std::unique_ptr<DatabaseCon> mWalletDB;
     std::unique_ptr<Overlay> overlay_;
-    std::vector<std::unique_ptr<Stoppable>> websocketServers_;
 
     boost::asio::signal_set m_signals;
 
     std::condition_variable cv_;
-    std::mutex mut_;
+    mutable std::mutex mut_;
     bool isTimeToStop = false;
 
     std::atomic<bool> checkSigs_;
@@ -225,6 +234,7 @@ public:
     io_latency_sampler m_io_latency_sampler;
 
     std::unique_ptr<GRPCServer> grpcServer_;
+    std::unique_ptr<ReportingETL> reportingETL_;
 
     //--------------------------------------------------------------------------
 
@@ -252,8 +262,7 @@ public:
         std::unique_ptr<Config> config,
         std::unique_ptr<Logs> logs,
         std::unique_ptr<TimeKeeper> timeKeeper)
-        : RootStoppable("Application")
-        , BasicApp(numberOfThreads(*config))
+        : BasicApp(numberOfThreads(*config))
         , config_(std::move(config))
         , logs_(std::move(logs))
         , timeKeeper_(std::move(timeKeeper))
@@ -264,16 +273,24 @@ public:
               perf::setup_PerfLog(
                   config_->section("perf"),
                   config_->CONFIG_DIR),
-              *this,
               logs_->journal("PerfLog"),
-              [this]() { signalStop(); }))
+              [this] { signalStop(); }))
 
         , m_txMaster(*this)
 
-        , m_nodeStoreScheduler(*this)
+        , m_collectorManager(make_CollectorManager(
+              config_->section(SECTION_INSIGHT),
+              logs_->journal("Collector")))
+
+        , m_jobQueue(std::make_unique<JobQueue>(
+              m_collectorManager->group("jobq"),
+              logs_->journal("JobQueue"),
+              *logs_,
+              *perfLog_))
+
+        , m_nodeStoreScheduler(*m_jobQueue)
 
         , m_shaMapStore(make_SHAMapStore(
-              *this,
               *this,
               m_nodeStoreScheduler,
               logs_->journal("SHAMapStore")))
@@ -287,9 +304,6 @@ public:
               stopwatch(),
               logs_->journal("TaggedCache"))
 
-        , m_collectorManager(CollectorManager::New(
-              config_->section(SECTION_INSIGHT),
-              logs_->journal("Collector")))
         , cachedSLEs_(std::chrono::minutes(1), stopwatch())
         , validatorKeys_(*config_, m_journal)
 
@@ -297,29 +311,18 @@ public:
               m_collectorManager->collector(),
               logs_->journal("Resource")))
 
-        // The JobQueue has to come pretty early since
-        // almost everything is a Stoppable child of the JobQueue.
-        //
-        , m_jobQueue(std::make_unique<JobQueue>(
-              m_collectorManager->group("jobq"),
-              m_nodeStoreScheduler,
-              logs_->journal("JobQueue"),
-              *logs_,
-              *perfLog_))
-
-        , m_nodeStore(m_shaMapStore->makeNodeStore("NodeStore.main", 4))
+        , m_nodeStore(m_shaMapStore->makeNodeStore(4))
 
         , nodeFamily_(*this, *m_collectorManager)
 
         // The shard store is optional and make_ShardStore can return null.
         , shardStore_(make_ShardStore(
               *this,
-              *m_jobQueue,
               m_nodeStoreScheduler,
               4,
               logs_->journal("ShardStore")))
 
-        , m_orderBookDB(*this, *m_jobQueue)
+        , m_orderBookDB(*this)
 
         , m_pathRequests(std::make_unique<PathRequests>(
               *this,
@@ -329,9 +332,11 @@ public:
         , m_ledgerMaster(std::make_unique<LedgerMaster>(
               *this,
               stopwatch(),
-              *m_jobQueue,
               m_collectorManager->collector(),
               logs_->journal("LedgerMaster")))
+
+        , ledgerCleaner_(
+              make_LedgerCleaner(*this, logs_->journal("LedgerCleaner")))
 
         // VFALCO NOTE must come before NetworkOPs to prevent a crash due
         //             to dependencies in the destructor.
@@ -339,16 +344,19 @@ public:
         , m_inboundLedgers(make_InboundLedgers(
               *this,
               stopwatch(),
-              *m_jobQueue,
               m_collectorManager->collector()))
 
         , m_inboundTransactions(make_InboundTransactions(
               *this,
-              *m_jobQueue,
               m_collectorManager->collector(),
               [this](std::shared_ptr<SHAMap> const& set, bool fromAcquire) {
                   gotTXSet(set, fromAcquire);
               }))
+
+        , m_ledgerReplayer(std::make_unique<LedgerReplayer>(
+              *this,
+              *m_inboundLedgers,
+              make_PeerSetBuilder(*this)))
 
         , m_acceptedLedgerCache(
               "AcceptedLedger",
@@ -365,7 +373,6 @@ public:
               config_->START_VALID,
               *m_jobQueue,
               *m_ledgerMaster,
-              *m_jobQueue,
               validatorKeys_,
               get_io_service(),
               logs_->journal("NetworkOPs"),
@@ -394,7 +401,6 @@ public:
 
         , serverHandler_(make_ServerHandler(
               *this,
-              *m_networkOPs,
               get_io_service(),
               *m_jobQueue,
               *m_networkOPs,
@@ -415,8 +421,7 @@ public:
               *this,
               logs_->journal("Validations"))
 
-        , m_loadManager(
-              make_LoadManager(*this, *this, logs_->journal("LoadManager")))
+        , m_loadManager(make_LoadManager(*this, logs_->journal("LoadManager")))
 
         , txQ_(
               std::make_unique<TxQ>(setup_TxQ(*config_), logs_->journal("TxQ")))
@@ -424,8 +429,6 @@ public:
         , sweepTimer_(get_io_service())
 
         , entropyTimer_(get_io_service())
-
-        , startTimers_(false)
 
         , m_signals(get_io_service())
 
@@ -440,6 +443,9 @@ public:
               std::chrono::milliseconds(100),
               get_io_service())
         , grpcServer_(std::make_unique<GRPCServer>(*this))
+        , reportingETL_(
+              config_->reporting() ? std::make_unique<ReportingETL>(*this)
+                                   : nullptr)
     {
         add(m_resourceManager.get());
 
@@ -447,8 +453,8 @@ public:
         // VFALCO - READ THIS!
         //
         //  Do not start threads, open sockets, or do any sort of "real work"
-        //  inside the constructor. Put it in onStart instead. Or if you must,
-        //  put it in setup (but everything in setup should be moved to onStart
+        //  inside the constructor. Put it in start instead. Or if you must,
+        //  put it in setup (but everything in setup should be moved to start
         //  anyway.
         //
         //  The reason is that the unit tests require an Application object to
@@ -458,10 +464,7 @@ public:
         //  started in this constructor.
         //
 
-        // VFALCO HACK
-        m_nodeStoreScheduler.setJobQueue(*m_jobQueue);
-
-        add(m_ledgerMaster->getPropertySource());
+        add(ledgerCleaner_.get());
     }
 
     //--------------------------------------------------------------------------
@@ -469,17 +472,17 @@ public:
     bool
     setup() override;
     void
-    doStart(bool withTimers) override;
+    start(bool withTimers) override;
     void
     run() override;
-    bool
-    isShutdown() override;
     void
     signalStop() override;
     bool
     checkSigs() const override;
     void
     checkSigs(bool) override;
+    bool
+    isStopping() const override;
     int
     fdRequired() const override;
 
@@ -563,6 +566,18 @@ public:
     getLedgerMaster() override
     {
         return *m_ledgerMaster;
+    }
+
+    LedgerCleaner&
+    getLedgerCleaner() override
+    {
+        return *ledgerCleaner_;
+    }
+
+    LedgerReplayer&
+    getLedgerReplayer() override
+    {
+        return *m_ledgerReplayer;
     }
 
     InboundLedgers&
@@ -660,8 +675,8 @@ public:
                 return nullptr;
             }
 
-            auto handler = RPC::ShardArchiveHandler::tryMakeRecoveryHandler(
-                *this, *m_jobQueue);
+            auto handler =
+                RPC::ShardArchiveHandler::tryMakeRecoveryHandler(*this);
 
             if (!initAndSet(std::move(handler)))
                 return nullptr;
@@ -670,8 +685,8 @@ public:
         // Construct the ShardArchiveHandler
         if (shardArchiveHandler_ == nullptr)
         {
-            auto handler = RPC::ShardArchiveHandler::makeShardArchiveHandler(
-                *this, *m_jobQueue);
+            auto handler =
+                RPC::ShardArchiveHandler::makeShardArchiveHandler(*this);
 
             if (!initAndSet(std::move(handler)))
                 return nullptr;
@@ -797,12 +812,16 @@ public:
     OpenLedger&
     openLedger() override
     {
+        if (config_->reporting())
+            Throw<ReportingShouldProxy>();
         return *openLedger_;
     }
 
     OpenLedger const&
     openLedger() const override
     {
+        if (config_->reporting())
+            Throw<ReportingShouldProxy>();
         return *openLedger_;
     }
 
@@ -820,23 +839,25 @@ public:
         return *txQ_;
     }
 
-    DatabaseCon&
-    getTxnDB() override
+    RelationalDBInterface&
+    getRelationalDBInterface() override
     {
-        assert(mTxnDB.get() != nullptr);
-        return *mTxnDB;
+        assert(mRelationalDBInterface.get() != nullptr);
+        return *mRelationalDBInterface;
     }
-    DatabaseCon&
-    getLedgerDB() override
-    {
-        assert(mLedgerDB.get() != nullptr);
-        return *mLedgerDB;
-    }
+
     DatabaseCon&
     getWalletDB() override
     {
         assert(mWalletDB.get() != nullptr);
         return *mWalletDB;
+    }
+
+    ReportingETL&
+    getReportingETL() override
+    {
+        assert(reportingETL_.get() != nullptr);
+        return *reportingETL_;
     }
 
     bool
@@ -848,81 +869,25 @@ public:
     //--------------------------------------------------------------------------
 
     bool
-    initSQLiteDBs()
+    initRDBMS()
     {
-        assert(mTxnDB.get() == nullptr);
-        assert(mLedgerDB.get() == nullptr);
         assert(mWalletDB.get() == nullptr);
 
         try
         {
-            auto setup = setup_DatabaseCon(*config_, m_journal);
-
-            // transaction database
-            mTxnDB = std::make_unique<DatabaseCon>(
-                setup,
-                TxDBName,
-                TxDBPragma,
-                TxDBInit,
-                DatabaseCon::CheckpointerSetup{m_jobQueue.get(), &logs()});
-            mTxnDB->getSession() << boost::str(
-                boost::format("PRAGMA cache_size=-%d;") %
-                kilobytes(config_->getValueFor(SizedItem::txnDBCache)));
-
-            if (!setup.standAlone || setup.startUp == Config::LOAD ||
-                setup.startUp == Config::LOAD_FILE ||
-                setup.startUp == Config::REPLAY)
-            {
-                // Check if AccountTransactions has primary key
-                std::string cid, name, type;
-                std::size_t notnull, dflt_value, pk;
-                soci::indicator ind;
-                soci::statement st =
-                    (mTxnDB->getSession().prepare
-                         << ("PRAGMA table_info(AccountTransactions);"),
-                     soci::into(cid),
-                     soci::into(name),
-                     soci::into(type),
-                     soci::into(notnull),
-                     soci::into(dflt_value, ind),
-                     soci::into(pk));
-
-                st.execute();
-                while (st.fetch())
-                {
-                    if (pk == 1)
-                    {
-                        JLOG(m_journal.fatal())
-                            << "AccountTransactions database "
-                               "should not have a primary key";
-                        return false;
-                    }
-                }
-            }
-
-            // ledger database
-            mLedgerDB = std::make_unique<DatabaseCon>(
-                setup,
-                LgrDBName,
-                LgrDBPragma,
-                LgrDBInit,
-                DatabaseCon::CheckpointerSetup{m_jobQueue.get(), &logs()});
-            mLedgerDB->getSession() << boost::str(
-                boost::format("PRAGMA cache_size=-%d;") %
-                kilobytes(config_->getValueFor(SizedItem::lgrDBCache)));
+            mRelationalDBInterface =
+                RelationalDBInterface::init(*this, *config_, *m_jobQueue);
 
             // wallet database
+            auto setup = setup_DatabaseCon(*config_, m_journal);
             setup.useGlobalPragma = false;
-            mWalletDB = std::make_unique<DatabaseCon>(
-                setup,
-                WalletDBName,
-                std::array<char const*, 0>(),
-                WalletDBInit);
+
+            mWalletDB = makeWalletDB(setup);
         }
         catch (std::exception const& e)
         {
             JLOG(m_journal.fatal())
-                << "Failed to initialize SQLite databases: " << e.what();
+                << "Failed to initialize SQL databases: " << e.what();
             return false;
         }
 
@@ -936,13 +901,12 @@ public:
         {
             auto j = logs_->journal("NodeObject");
             NodeStore::DummyScheduler dummyScheduler;
-            RootStoppable dummyRoot{"DummyRoot"};
             std::unique_ptr<NodeStore::Database> source =
                 NodeStore::Manager::instance().make_Database(
-                    "NodeStore.import",
+                    megabytes(config_->getValueFor(
+                        SizedItem::burstSize, std::nullopt)),
                     dummyScheduler,
                     0,
-                    dummyRoot,
                     config_->section(ConfigSection::importNodeDatabase()),
                     j);
 
@@ -952,7 +916,7 @@ public:
             using namespace std::chrono;
             auto const start = steady_clock::now();
 
-            m_nodeStore->import(*source);
+            m_nodeStore->importDatabase(*source);
 
             auto const elapsed =
                 duration_cast<seconds>(steady_clock::now() - start);
@@ -962,9 +926,6 @@ public:
 
         // tune caches
         using namespace std::chrono;
-        m_nodeStore->tune(
-            config_->getValueFor(SizedItem::nodeCacheSize),
-            seconds{config_->getValueFor(SizedItem::nodeCacheAge)});
 
         m_ledgerMaster->tune(
             config_->getValueFor(SizedItem::ledgerSize),
@@ -974,36 +935,10 @@ public:
     }
 
     //--------------------------------------------------------------------------
-    //
-    // Stoppable
-    //
-
-    void
-    onPrepare() override
-    {
-    }
-
-    void
-    onStart() override
-    {
-        JLOG(m_journal.info()) << "Application starting. Version is "
-                               << BuildInfo::getVersionString();
-
-        using namespace std::chrono_literals;
-        if (startTimers_)
-        {
-            setSweepTimer();
-            setEntropyTimer();
-        }
-
-        m_io_latency_sampler.start();
-
-        m_resolver->start();
-    }
 
     // Called to indicate shutdown.
     void
-    onStop() override
+    stop()
     {
         JLOG(m_journal.debug()) << "Application stopping";
 
@@ -1066,7 +1001,31 @@ public:
                 return validators().trustedPublisher(pubKey);
             });
 
-        stopped();
+        // The order of these stop calls is delicate.
+        // Re-ordering them risks undefined behavior.
+        m_loadManager->stop();
+        m_shaMapStore->stop();
+        m_jobQueue->stop();
+        if (shardArchiveHandler_)
+            shardArchiveHandler_->stop();
+        if (overlay_)
+            overlay_->stop();
+        if (shardStore_)
+            shardStore_->stop();
+        grpcServer_->stop();
+        m_networkOPs->stop();
+        serverHandler_->stop();
+        m_ledgerReplayer->stop();
+        m_inboundTransactions->stop();
+        m_inboundLedgers->stop();
+        ledgerCleaner_->stop();
+        if (reportingETL_)
+            reportingETL_->stop();
+        if (auto pg = dynamic_cast<RelationalDBInterfacePostgres*>(
+                &*mRelationalDBInterface))
+            pg->stop();
+        m_nodeStore->stop();
+        perfLog_->stop();
     }
 
     //--------------------------------------------------------------------------
@@ -1087,8 +1046,7 @@ public:
         // Only start the timer if waitHandlerCounter_ is not yet joined.
         if (auto optionalCountedHandler = waitHandlerCounter_.wrap(
                 [this](boost::system::error_code const& e) {
-                    if ((e.value() == boost::system::errc::success) &&
-                        (!m_jobQueue->isStopped()))
+                    if (e.value() == boost::system::errc::success)
                     {
                         m_jobQueue->addJob(
                             jtSWEEP, "sweep", [this](Job&) { doSweep(); });
@@ -1144,66 +1102,10 @@ public:
     void
     doSweep()
     {
-        if (!config_->standalone())
+        if (!config_->standalone() &&
+            !getRelationalDBInterface().transactionDbHasSpace(*config_))
         {
-            boost::filesystem::space_info space =
-                boost::filesystem::space(config_->legacy("database_path"));
-
-            if (space.available < megabytes(512))
-            {
-                JLOG(m_journal.fatal())
-                    << "Remaining free disk space is less than 512MB";
-                signalStop();
-            }
-
-            DatabaseCon::Setup dbSetup = setup_DatabaseCon(*config_);
-            boost::filesystem::path dbPath = dbSetup.dataDir / TxDBName;
-            boost::system::error_code ec;
-            boost::optional<std::uint64_t> dbSize =
-                boost::filesystem::file_size(dbPath, ec);
-            if (ec)
-            {
-                JLOG(m_journal.error())
-                    << "Error checking transaction db file size: "
-                    << ec.message();
-                dbSize.reset();
-            }
-
-            auto db = mTxnDB->checkoutDb();
-            static auto const pageSize = [&] {
-                std::uint32_t ps;
-                *db << "PRAGMA page_size;", soci::into(ps);
-                return ps;
-            }();
-            static auto const maxPages = [&] {
-                std::uint32_t mp;
-                *db << "PRAGMA max_page_count;", soci::into(mp);
-                return mp;
-            }();
-            std::uint32_t pageCount;
-            *db << "PRAGMA page_count;", soci::into(pageCount);
-            std::uint32_t freePages = maxPages - pageCount;
-            std::uint64_t freeSpace =
-                safe_cast<std::uint64_t>(freePages) * pageSize;
-            JLOG(m_journal.info())
-                << "Transaction DB pathname: " << dbPath.string()
-                << "; file size: " << dbSize.value_or(-1) << " bytes"
-                << "; SQLite page size: " << pageSize << " bytes"
-                << "; Free pages: " << freePages
-                << "; Free space: " << freeSpace << " bytes; "
-                << "Note that this does not take into account available disk "
-                   "space.";
-
-            if (freeSpace < megabytes(512))
-            {
-                JLOG(m_journal.fatal())
-                    << "Free SQLite space for transaction db is less than "
-                       "512MB. To fix this, rippled must be executed with the "
-                       "\"--vacuum\" parameter before restarting. "
-                       "Note that this activity can take multiple days, "
-                       "depending on database size.";
-                signalStop();
-            }
+            signalStop();
         }
 
         // VFALCO NOTE Does the order of calls matter?
@@ -1221,8 +1123,15 @@ public:
         getTempNodeCache().sweep();
         getValidations().expire();
         getInboundLedgers().sweep();
+        getLedgerReplayer().sweep();
         m_acceptedLedgerCache.sweep();
         cachedSLEs_.expire();
+
+#ifdef RIPPLED_REPORTING
+        if (auto pg = dynamic_cast<RelationalDBInterfacePostgres*>(
+                &*mRelationalDBInterface))
+            pg->sweep();
+#endif
 
         // Set timer to do another sweep later.
         setSweepTimer();
@@ -1241,8 +1150,7 @@ private:
 
     bool
     nodeToShards();
-    bool
-    validateShards();
+
     void
     startGenesisLedger();
 
@@ -1287,8 +1195,6 @@ ApplicationImp::setup()
                 signalStop();
         });
 
-    assert(mTxnDB == nullptr);
-
     auto debug_log = config_->getDebugLogFile();
 
     if (!debug_log.empty())
@@ -1315,13 +1221,13 @@ ApplicationImp::setup()
     // Optionally turn off logging to console.
     logs_->silent(config_->silent());
 
-    m_jobQueue->setThreadCount(config_->WORKERS, config_->standalone());
-    grpcServer_->run();
+    m_jobQueue->setThreadCount(
+        config_->WORKERS, config_->standalone() && !config_->reporting());
 
     if (!config_->standalone())
         timeKeeper_->run(config_->SNTP_SERVERS);
 
-    if (!initSQLiteDBs() || !initNodeStore())
+    if (!initRDBMS() || !initNodeStore())
         return false;
 
     if (shardStore_)
@@ -1344,71 +1250,78 @@ ApplicationImp::setup()
 
     // Configure the amendments the server supports
     {
-        auto const& sa = detail::supportedAmendments();
-        std::vector<std::string> saHashes;
-        saHashes.reserve(sa.size());
-        for (auto const& name : sa)
-        {
-            auto const f = getRegisteredFeature(name);
-            BOOST_ASSERT(f);
-            if (f)
-                saHashes.push_back(to_string(*f) + " " + name);
-        }
-        Section supportedAmendments("Supported Amendments");
-        supportedAmendments.append(saHashes);
+        auto const supported = []() {
+            auto const& amendments = detail::supportedAmendments();
+            std::vector<AmendmentTable::FeatureInfo> supported;
+            supported.reserve(amendments.size());
+            for (auto const& [a, vote] : amendments)
+            {
+                auto const f = ripple::getRegisteredFeature(a);
+                assert(f);
+                if (f)
+                    supported.emplace_back(a, *f, vote);
+            }
+            return supported;
+        }();
+        Section const& downVoted = config_->section(SECTION_VETO_AMENDMENTS);
 
-        Section enabledAmendments = config_->section(SECTION_AMENDMENTS);
+        Section const& upVoted = config_->section(SECTION_AMENDMENTS);
 
         m_amendmentTable = make_AmendmentTable(
+            *this,
             config().AMENDMENT_MAJORITY_TIME,
-            supportedAmendments,
-            enabledAmendments,
-            config_->section(SECTION_VETO_AMENDMENTS),
+            supported,
+            upVoted,
+            downVoted,
             logs_->journal("Amendments"));
     }
 
     Pathfinder::initPathTable();
 
     auto const startUp = config_->START_UP;
-    if (startUp == Config::FRESH)
+    if (!config_->reporting())
     {
-        JLOG(m_journal.info()) << "Starting new Ledger";
-
-        startGenesisLedger();
-    }
-    else if (
-        startUp == Config::LOAD || startUp == Config::LOAD_FILE ||
-        startUp == Config::REPLAY)
-    {
-        JLOG(m_journal.info()) << "Loading specified Ledger";
-
-        if (!loadOldLedger(
-                config_->START_LEDGER,
-                startUp == Config::REPLAY,
-                startUp == Config::LOAD_FILE))
+        if (startUp == Config::FRESH)
         {
-            JLOG(m_journal.error())
-                << "The specified ledger could not be loaded.";
-            return false;
+            JLOG(m_journal.info()) << "Starting new Ledger";
+
+            startGenesisLedger();
+        }
+        else if (
+            startUp == Config::LOAD || startUp == Config::LOAD_FILE ||
+            startUp == Config::REPLAY)
+        {
+            JLOG(m_journal.info()) << "Loading specified Ledger";
+
+            if (!loadOldLedger(
+                    config_->START_LEDGER,
+                    startUp == Config::REPLAY,
+                    startUp == Config::LOAD_FILE))
+            {
+                JLOG(m_journal.error())
+                    << "The specified ledger could not be loaded.";
+                return false;
+            }
+        }
+        else if (startUp == Config::NETWORK)
+        {
+            // This should probably become the default once we have a stable
+            // network.
+            if (!config_->standalone())
+                m_networkOPs->setNeedNetworkLedger();
+
+            startGenesisLedger();
+        }
+        else
+        {
+            startGenesisLedger();
         }
     }
-    else if (startUp == Config::NETWORK)
-    {
-        // This should probably become the default once we have a stable
-        // network.
-        if (!config_->standalone())
-            m_networkOPs->setNeedNetworkLedger();
 
-        startGenesisLedger();
-    }
-    else
-    {
-        startGenesisLedger();
-    }
+    if (!config().reporting())
+        m_orderBookDB.setup(getLedgerMaster().getCurrentLedger());
 
-    m_orderBookDB.setup(getLedgerMaster().getCurrentLedger());
-
-    nodeIdentity_ = loadNodeIdentity(*this);
+    nodeIdentity_ = getNodeIdentity(*this);
 
     if (!cluster_->load(config().section(SECTION_CLUSTER_NODES)))
     {
@@ -1416,42 +1329,47 @@ ApplicationImp::setup()
         return false;
     }
 
+    if (!config().reporting())
     {
-        if (validatorKeys_.configInvalid())
-            return false;
-
-        if (!validatorManifests_->load(
-                getWalletDB(),
-                "ValidatorManifests",
-                validatorKeys_.manifest,
-                config().section(SECTION_VALIDATOR_KEY_REVOCATION).values()))
         {
-            JLOG(m_journal.fatal()) << "Invalid configured validator manifest.";
-            return false;
+            if (validatorKeys_.configInvalid())
+                return false;
+
+            if (!validatorManifests_->load(
+                    getWalletDB(),
+                    "ValidatorManifests",
+                    validatorKeys_.manifest,
+                    config()
+                        .section(SECTION_VALIDATOR_KEY_REVOCATION)
+                        .values()))
+            {
+                JLOG(m_journal.fatal())
+                    << "Invalid configured validator manifest.";
+                return false;
+            }
+
+            publisherManifests_->load(getWalletDB(), "PublisherManifests");
+
+            // Setup trusted validators
+            if (!validators_->load(
+                    validatorKeys_.publicKey,
+                    config().section(SECTION_VALIDATORS).values(),
+                    config().section(SECTION_VALIDATOR_LIST_KEYS).values()))
+            {
+                JLOG(m_journal.fatal())
+                    << "Invalid entry in validator configuration.";
+                return false;
+            }
         }
 
-        publisherManifests_->load(getWalletDB(), "PublisherManifests");
-
-        // Setup trusted validators
-        if (!validators_->load(
-                validatorKeys_.publicKey,
-                config().section(SECTION_VALIDATORS).values(),
-                config().section(SECTION_VALIDATOR_LIST_KEYS).values()))
+        if (!validatorSites_->load(
+                config().section(SECTION_VALIDATOR_LIST_SITES).values()))
         {
             JLOG(m_journal.fatal())
-                << "Invalid entry in validator configuration.";
+                << "Invalid entry in [" << SECTION_VALIDATOR_LIST_SITES << "]";
             return false;
         }
     }
-
-    if (!validatorSites_->load(
-            config().section(SECTION_VALIDATOR_LIST_SITES).values()))
-    {
-        JLOG(m_journal.fatal())
-            << "Invalid entry in [" << SECTION_VALIDATOR_LIST_SITES << "]";
-        return false;
-    }
-
     //----------------------------------------------------------------------
     //
     // Server
@@ -1463,32 +1381,30 @@ ApplicationImp::setup()
     //             move the instantiation inside a conditional:
     //
     //             if (!config_.standalone())
-    overlay_ = make_Overlay(
-        *this,
-        setup_Overlay(*config_),
-        *m_jobQueue,
-        *serverHandler_,
-        *m_resourceManager,
-        *m_resolver,
-        get_io_service(),
-        *config_,
-        m_collectorManager->collector());
-    add(*overlay_);  // add to PropertyStream
+    if (!config_->reporting())
+    {
+        overlay_ = make_Overlay(
+            *this,
+            setup_Overlay(*config_),
+            *serverHandler_,
+            *m_resourceManager,
+            *m_resolver,
+            get_io_service(),
+            *config_,
+            m_collectorManager->collector());
+        add(*overlay_);  // add to PropertyStream
+    }
 
     if (!config_->standalone())
     {
-        // validation and node import require the sqlite db
+        // NodeStore import into the ShardStore requires the SQLite database
         if (config_->nodeToShard && !nodeToShards())
-            return false;
-
-        if (config_->validateShards && !validateShards())
             return false;
     }
 
-    validatorSites_->start();
-
     // start first consensus round
-    if (!m_networkOPs->beginConsensus(
+    if (!config_->reporting() &&
+        !m_networkOPs->beginConsensus(
             m_ledgerMaster->getClosedLedger()->info().hash))
     {
         JLOG(m_journal.fatal()) << "Unable to start consensus";
@@ -1588,7 +1504,7 @@ ApplicationImp::setup()
              Role::ADMIN,
              {},
              {},
-             RPC::ApiMaximumSupportedVersion},
+             RPC::apiMaximumSupportedVersion},
             jvCommand};
 
         Json::Value jvResult;
@@ -1600,6 +1516,7 @@ ApplicationImp::setup()
         }
     }
 
+    RPC::ShardArchiveHandler* shardArchiveHandler = nullptr;
     if (shardStore_)
     {
         try
@@ -1611,15 +1528,7 @@ ApplicationImp::setup()
 
             // Recovery is needed.
             if (handler)
-            {
-                if (!handler->start())
-                {
-                    JLOG(m_journal.fatal())
-                        << "Failed to start ShardArchiveHandler.";
-
-                    return false;
-                }
-            }
+                shardArchiveHandler = handler;
         }
         catch (std::exception const& e)
         {
@@ -1632,15 +1541,42 @@ ApplicationImp::setup()
         }
     }
 
+    if (shardArchiveHandler && !shardArchiveHandler->start())
+    {
+        JLOG(m_journal.fatal()) << "Failed to start ShardArchiveHandler.";
+
+        return false;
+    }
+
+    validatorSites_->start();
+
+    if (reportingETL_)
+        reportingETL_->start();
+
     return true;
 }
 
 void
-ApplicationImp::doStart(bool withTimers)
+ApplicationImp::start(bool withTimers)
 {
-    startTimers_ = withTimers;
-    prepare();
-    start();
+    JLOG(m_journal.info()) << "Application starting. Version is "
+                           << BuildInfo::getVersionString();
+
+    if (withTimers)
+    {
+        setSweepTimer();
+        setEntropyTimer();
+    }
+
+    m_io_latency_sampler.start();
+    m_resolver->start();
+    m_loadManager->start();
+    m_shaMapStore->start();
+    if (overlay_)
+        overlay_->start();
+    grpcServer_->start();
+    ledgerCleaner_->start();
+    perfLog_->start();
 }
 
 void
@@ -1660,10 +1596,8 @@ ApplicationImp::run()
         cv_.wait(lk, [this] { return isTimeToStop; });
     }
 
-    // Stop the server. When this returns, all
-    // Stoppable objects should be stopped.
     JLOG(m_journal.info()) << "Received shutdown request";
-    stop(m_journal);
+    stop();
     JLOG(m_journal.info()) << "Done.";
 }
 
@@ -1682,13 +1616,6 @@ ApplicationImp::signalStop()
 }
 
 bool
-ApplicationImp::isShutdown()
-{
-    // from Stoppable mixin
-    return isStopped();
-}
-
-bool
 ApplicationImp::checkSigs() const
 {
     return checkSigs_;
@@ -1700,6 +1627,13 @@ ApplicationImp::checkSigs(bool check)
     checkSigs_ = check;
 }
 
+bool
+ApplicationImp::isStopping() const
+{
+    std::lock_guard lk{mut_};
+    return isTimeToStop;
+}
+
 int
 ApplicationImp::fdRequired() const
 {
@@ -1707,7 +1641,8 @@ ApplicationImp::fdRequired() const
     int needed = 128;
 
     // 2x the configured peer limit for peer connections:
-    needed += 2 * overlay_->limit();
+    if (overlay_)
+        needed += 2 * overlay_->limit();
 
     // the number of fds needed by the backend (internally
     // doubled if online delete is enabled).
@@ -1754,8 +1689,7 @@ ApplicationImp::getLastFullLedger()
 
     try
     {
-        auto const [ledger, seq, hash] =
-            loadLedgerHelper("order by LedgerSeq desc limit 1", *this);
+        auto const [ledger, seq, hash] = getLatestLedger(*this);
 
         if (!ledger)
             return ledger;
@@ -1775,7 +1709,7 @@ ApplicationImp::getLastFullLedger()
         {
             stream << "Failed on ledger";
             Json::Value p;
-            addJson(p, {*ledger, LedgerFill::full});
+            addJson(p, {*ledger, nullptr, LedgerFill::full});
             stream << p;
         }
 
@@ -1881,7 +1815,7 @@ ApplicationImp::loadLedgerFromFile(std::string const& name)
 
             uint256 uIndex;
 
-            if (!uIndex.SetHex(entry[jss::index].asString()))
+            if (!uIndex.parseHex(entry[jss::index].asString()))
             {
                 JLOG(m_journal.fatal()) << "Invalid entry in ledger";
                 return nullptr;
@@ -1909,8 +1843,7 @@ ApplicationImp::loadLedgerFromFile(std::string const& name)
             }
         }
 
-        loadLedger->stateMap().flushDirty(
-            hotACCOUNT_NODE, loadLedger->info().seq);
+        loadLedger->stateMap().flushDirty(hotACCOUNT_NODE);
 
         loadLedger->setAccepted(
             closeTime, closeTimeResolution, !closeTimeEstimated, *config_);
@@ -1943,7 +1876,7 @@ ApplicationImp::loadOldLedger(
         {
             uint256 hash;
 
-            if (hash.SetHex(ledgerID))
+            if (hash.parseHex(ledgerID))
             {
                 loadLedger = loadByHash(hash, *this);
 
@@ -1955,7 +1888,8 @@ ApplicationImp::loadOldLedger(
                         hash,
                         0,
                         InboundLedger::Reason::GENERIC,
-                        stopwatch());
+                        stopwatch(),
+                        make_DummyPeerSet(*this));
                     if (il->checkLocal())
                         loadLedger = il->getLedger();
                 }
@@ -1998,7 +1932,8 @@ ApplicationImp::loadOldLedger(
                     replayLedger->info().parentHash,
                     0,
                     InboundLedger::Reason::GENERIC,
-                    stopwatch());
+                    stopwatch(),
+                    make_DummyPeerSet(*this));
 
                 if (il->checkLocal())
                     loadLedger = il->getLedger();
@@ -2046,9 +1981,9 @@ ApplicationImp::loadOldLedger(
             return false;
         }
 
-        if (!loadLedger->assertSane(journal("Ledger")))
+        if (!loadLedger->assertSensible(journal("Ledger")))
         {
-            JLOG(m_journal.fatal()) << "Ledger is not sane.";
+            JLOG(m_journal.fatal()) << "Ledger is not sensible.";
             assert(false);
             return false;
         }
@@ -2111,7 +2046,7 @@ ApplicationImp::serverOkay(std::string& reason)
     if (!config().ELB_SUPPORT)
         return true;
 
-    if (isShutdown())
+    if (isStopping())
     {
         reason = "Server is shutting down";
         return false;
@@ -2120,6 +2055,18 @@ ApplicationImp::serverOkay(std::string& reason)
     if (getOPs().isNeedNetworkLedger())
     {
         reason = "Not synchronized with network yet";
+        return false;
+    }
+
+    if (getOPs().isAmendmentBlocked())
+    {
+        reason = "Server version too old";
+        return false;
+    }
+
+    if (getOPs().isUNLBlocked())
+    {
+        reason = "No valid validator list available";
         return false;
     }
 
@@ -2135,12 +2082,6 @@ ApplicationImp::serverOkay(std::string& reason)
     if (getFeeTrack().isLoadedLocal())
     {
         reason = "Too much load";
-        return false;
-    }
-
-    if (getOPs().isAmendmentBlocked())
-    {
-        reason = "Server version too old";
         return false;
     }
 
@@ -2170,39 +2111,14 @@ ApplicationImp::nodeToShards()
         JLOG(m_journal.fatal()) << "Invalid [shard_db] configuration";
         return false;
     }
-    shardStore_->import(getNodeStore());
-    return true;
-}
-
-bool
-ApplicationImp::validateShards()
-{
-    assert(overlay_);
-    assert(!config_->standalone());
-
-    if (config_->section(ConfigSection::shardDatabase()).empty())
-    {
-        JLOG(m_journal.fatal())
-            << "The [shard_db] configuration setting must be set";
-        return false;
-    }
-    if (!shardStore_)
-    {
-        JLOG(m_journal.fatal()) << "Invalid [shard_db] configuration";
-        return false;
-    }
-    shardStore_->validate();
+    shardStore_->importDatabase(getNodeStore());
     return true;
 }
 
 void
 ApplicationImp::setMaxDisallowedLedger()
 {
-    boost::optional<LedgerIndex> seq;
-    {
-        auto db = getLedgerDB().checkoutDb();
-        *db << "SELECT MAX(LedgerSeq) FROM Ledgers;", soci::into(seq);
-    }
+    auto seq = getRelationalDBInterface().getMaxLedgerSeq();
     if (seq)
         maxDisallowedLedger_ = *seq;
 

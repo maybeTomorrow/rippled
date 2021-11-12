@@ -26,8 +26,10 @@
 #include <ripple/protocol/Protocol.h>
 #include <ripple/protocol/STTx.h>
 #include <ripple/protocol/TER.h>
+#include <ripple/protocol/TxMeta.h>
 #include <boost/optional.hpp>
-#include <boost/variant.hpp>
+#include <optional>
+#include <variant>
 
 namespace ripple {
 
@@ -52,18 +54,14 @@ enum TransStatus {
     INCOMPLETE = 8   // needs more signatures
 };
 
+enum class TxSearched { all, some, unknown };
+
 // This class is for constructing and examining transactions.
 // Transactions are static so manipulation functions are unnecessary.
 class Transaction : public std::enable_shared_from_this<Transaction>,
                     public CountedObject<Transaction>
 {
 public:
-    static char const*
-    getCountedObjectName()
-    {
-        return "Transaction";
-    }
-
     using pointer = std::shared_ptr<Transaction>;
     using ref = const pointer&;
 
@@ -72,6 +70,8 @@ public:
         std::string&,
         Application&) noexcept;
 
+    // The two boost::optional parameters are because SOCI requires
+    // boost::optional (not std::optional) parameters.
     static Transaction::pointer
     transactionFromSQL(
         boost::optional<std::uint64_t> const& ledgerSeq,
@@ -79,6 +79,8 @@ public:
         Blob const& rawTxn,
         Application& app);
 
+    // The boost::optional parameter is because SOCI requires
+    // boost::optional (not std::optional) parameters.
     static TransStatus
     sqlTransactionStatus(boost::optional<std::string> const& status);
 
@@ -98,6 +100,12 @@ public:
     getLedger() const
     {
         return mInLedger;
+    }
+
+    bool
+    isValidated() const
+    {
+        return mInLedger != 0;
     }
 
     TransStatus
@@ -273,7 +281,7 @@ public:
      * @brief getCurrentLedgerState Get current ledger state of transaction
      * @return Current ledger state
      */
-    boost::optional<CurrentLedgerState>
+    std::optional<CurrentLedgerState>
     getCurrentLedgerState() const
     {
         return currentLedgerState_;
@@ -300,10 +308,66 @@ public:
     Json::Value
     getJson(JsonOptions options, bool binary = false) const;
 
-    static pointer
+    // Information used to locate a transaction.
+    // Contains a nodestore hash and ledger sequence pair if the transaction was
+    // found. Otherwise, contains the range of ledgers present in the database
+    // at the time of search.
+    struct Locator
+    {
+        std::variant<std::pair<uint256, uint32_t>, ClosedInterval<uint32_t>>
+            locator;
+
+        // @return true if transaction was found, false otherwise
+        //
+        // Call this function first to determine the type of the contained info.
+        // Calling the wrong getter function will throw an exception.
+        // See documentation for the getter functions for more details
+        bool
+        isFound()
+        {
+            return std::holds_alternative<std::pair<uint256, uint32_t>>(
+                locator);
+        }
+
+        // @return key used to find transaction in nodestore
+        //
+        // Throws if isFound() returns false
+        uint256 const&
+        getNodestoreHash()
+        {
+            return std::get<std::pair<uint256, uint32_t>>(locator).first;
+        }
+
+        // @return sequence of ledger containing the transaction
+        //
+        // Throws is isFound() returns false
+        uint32_t
+        getLedgerSequence()
+        {
+            return std::get<std::pair<uint256, uint32_t>>(locator).second;
+        }
+
+        // @return range of ledgers searched
+        //
+        // Throws if isFound() returns true
+        ClosedInterval<uint32_t> const&
+        getLedgerRangeSearched()
+        {
+            return std::get<ClosedInterval<uint32_t>>(locator);
+        }
+    };
+
+    static Locator
+    locate(uint256 const& id, Application& app);
+
+    static std::variant<
+        std::pair<std::shared_ptr<Transaction>, std::shared_ptr<TxMeta>>,
+        TxSearched>
     load(uint256 const& id, Application& app, error_code_i& ec);
 
-    static boost::variant<Transaction::pointer, bool>
+    static std::variant<
+        std::pair<std::shared_ptr<Transaction>, std::shared_ptr<TxMeta>>,
+        TxSearched>
     load(
         uint256 const& id,
         Application& app,
@@ -311,11 +375,13 @@ public:
         error_code_i& ec);
 
 private:
-    static boost::variant<Transaction::pointer, bool>
+    static std::variant<
+        std::pair<std::shared_ptr<Transaction>, std::shared_ptr<TxMeta>>,
+        TxSearched>
     load(
         uint256 const& id,
         Application& app,
-        boost::optional<ClosedInterval<uint32_t>> const& range,
+        std::optional<ClosedInterval<uint32_t>> const& range,
         error_code_i& ec);
 
     uint256 mTransactionID;
@@ -328,7 +394,7 @@ private:
     /** different ways for transaction to be accepted */
     SubmitResult submitResult_;
 
-    boost::optional<CurrentLedgerState> currentLedgerState_;
+    std::optional<CurrentLedgerState> currentLedgerState_;
 
     std::shared_ptr<STTx const> mTransaction;
     Application& mApp;

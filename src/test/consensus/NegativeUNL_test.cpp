@@ -1860,7 +1860,12 @@ class NegativeUNLVoteFilterValidations_test : public beast::unit_test::suite
         auto& local = *nUnlKeys.begin();
         std::vector<std::string> cfgPublishers;
         validators.load(local, cfgKeys, cfgPublishers);
-        validators.updateTrusted(activeValidators);
+        validators.updateTrusted(
+            activeValidators,
+            env.timeKeeper().now(),
+            env.app().getOPs(),
+            env.app().overlay(),
+            env.app().getHashRouter());
         BEAST_EXPECT(validators.getTrustedMasterKeys().size() == numNodes);
         validators.setNegativeUNL(nUnlKeys);
         BEAST_EXPECT(validators.getNegativeUNL().size() == negUnlSize);
@@ -1992,14 +1997,14 @@ BEAST_DEFINE_TESTSUITE(NegativeUNLNoAmendment, ledger, ripple);
 BEAST_DEFINE_TESTSUITE(NegativeUNLVoteInternal, consensus, ripple);
 BEAST_DEFINE_TESTSUITE_MANUAL(NegativeUNLVoteScoreTable, consensus, ripple);
 BEAST_DEFINE_TESTSUITE_PRIO(NegativeUNLVoteGoodScore, consensus, ripple, 1);
-BEAST_DEFINE_TESTSUITE_PRIO(NegativeUNLVoteOffline, consensus, ripple, 1);
-BEAST_DEFINE_TESTSUITE_PRIO(NegativeUNLVoteMaxListed, consensus, ripple, 1);
+BEAST_DEFINE_TESTSUITE(NegativeUNLVoteOffline, consensus, ripple);
+BEAST_DEFINE_TESTSUITE(NegativeUNLVoteMaxListed, consensus, ripple);
 BEAST_DEFINE_TESTSUITE_PRIO(
     NegativeUNLVoteRetiredValidator,
     consensus,
     ripple,
     1);
-BEAST_DEFINE_TESTSUITE_PRIO(NegativeUNLVoteNewValidator, consensus, ripple, 1);
+BEAST_DEFINE_TESTSUITE(NegativeUNLVoteNewValidator, consensus, ripple);
 BEAST_DEFINE_TESTSUITE(NegativeUNLVoteFilterValidations, consensus, ripple);
 BEAST_DEFINE_TESTSUITE(NegativeUNLgRPC, ledger, ripple);
 
@@ -2015,9 +2020,9 @@ negUnlSizeTest(
 {
     bool sameSize = l->negativeUNL().size() == size;
     bool sameToDisable =
-        (l->validatorToDisable() != boost::none) == hasToDisable;
+        (l->validatorToDisable() != std::nullopt) == hasToDisable;
     bool sameToReEnable =
-        (l->validatorToReEnable() != boost::none) == hasToReEnable;
+        (l->validatorToReEnable() != std::nullopt) == hasToReEnable;
 
     return sameSize && sameToDisable && sameToReEnable;
 }

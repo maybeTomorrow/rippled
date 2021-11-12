@@ -34,18 +34,13 @@ class DatabaseRotating : public Database
 {
 public:
     DatabaseRotating(
-        std::string const& name,
-        Stoppable& parent,
         Scheduler& scheduler,
         int readThreads,
         Section const& config,
         beast::Journal journal)
-        : Database(name, parent, scheduler, readThreads, config, journal)
+        : Database(scheduler, readThreads, config, journal)
     {
     }
-
-    virtual TaggedCache<uint256, NodeObject> const&
-    getPositiveCache() = 0;
 
     /** Rotates the backends.
 

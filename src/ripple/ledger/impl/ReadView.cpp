@@ -18,7 +18,6 @@
 //==============================================================================
 
 #include <ripple/ledger/ReadView.h>
-#include <boost/optional.hpp>
 
 namespace ripple {
 
@@ -26,7 +25,7 @@ class Rules::Impl
 {
 private:
     std::unordered_set<uint256, hardened_hash<>> set_;
-    boost::optional<uint256> digest_;
+    std::optional<uint256> digest_;
     std::unordered_set<uint256, beast::uhash<>> const& presets_;
 
 public:
@@ -135,11 +134,9 @@ ReadView::sles_type::begin() const -> iterator
 }
 
 auto
-ReadView::sles_type::end() const -> iterator const&
+ReadView::sles_type::end() const -> iterator
 {
-    if (!end_)
-        end_ = iterator(view_, view_->slesEnd());
-    return *end_;
+    return iterator(view_, view_->slesEnd());
 }
 
 auto
@@ -165,11 +162,9 @@ ReadView::txs_type::begin() const -> iterator
 }
 
 auto
-ReadView::txs_type::end() const -> iterator const&
+ReadView::txs_type::end() const -> iterator
 {
-    if (!end_)
-        end_ = iterator(view_, view_->txsEnd());
-    return *end_;
+    return iterator(view_, view_->txsEnd());
 }
 
 }  // namespace ripple

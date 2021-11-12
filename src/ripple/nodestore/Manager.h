@@ -25,6 +25,7 @@
 #include <ripple/nodestore/Factory.h>
 
 namespace ripple {
+
 namespace NodeStore {
 
 /** Singleton for managing NodeStore factories and back ends. */
@@ -60,6 +61,7 @@ public:
     virtual std::unique_ptr<Backend>
     make_Backend(
         Section const& parameters,
+        std::size_t burstSize,
         Scheduler& scheduler,
         beast::Journal journal) = 0;
 
@@ -81,6 +83,7 @@ public:
        thrown.
 
         @param name A diagnostic label for the database.
+        @param burstSize Backend burst size in bytes.
         @param scheduler The scheduler to use for performing asynchronous tasks.
         @param readThreads The number of async read threads to create
         @param backendParameters The parameter string for the persistent
@@ -92,22 +95,12 @@ public:
     */
     virtual std::unique_ptr<Database>
     make_Database(
-        std::string const& name,
+        std::size_t burstSize,
         Scheduler& scheduler,
         int readThreads,
-        Stoppable& parent,
         Section const& backendParameters,
         beast::Journal journal) = 0;
 };
-
-//------------------------------------------------------------------------------
-
-/** Create a Backend. */
-std::unique_ptr<Backend>
-make_Backend(
-    Section const& config,
-    Scheduler& scheduler,
-    beast::Journal journal);
 
 }  // namespace NodeStore
 }  // namespace ripple

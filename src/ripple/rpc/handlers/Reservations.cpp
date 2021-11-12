@@ -25,8 +25,7 @@
 #include <ripple/rpc/Context.h>
 #include <ripple/rpc/handlers/Handlers.h>
 
-#include <boost/optional.hpp>
-
+#include <optional>
 #include <string>
 #include <utility>
 
@@ -35,6 +34,9 @@ namespace ripple {
 Json::Value
 doPeerReservationsAdd(RPC::JsonContext& context)
 {
+    if (context.app.config().reporting())
+        return rpcError(rpcREPORTING_UNSUPPORTED);
+
     auto const& params = context.params;
 
     if (!params.isMember(jss::public_key))
@@ -68,7 +70,7 @@ doPeerReservationsAdd(RPC::JsonContext& context)
 
     // channel_verify takes a key in both base58 and hex.
     // @nikb prefers that we take only base58.
-    boost::optional<PublicKey> optPk = parseBase58<PublicKey>(
+    std::optional<PublicKey> optPk = parseBase58<PublicKey>(
         TokenType::NodePublic, params[jss::public_key].asString());
     if (!optPk)
         return rpcError(rpcPUBLIC_MALFORMED);
@@ -88,6 +90,9 @@ doPeerReservationsAdd(RPC::JsonContext& context)
 Json::Value
 doPeerReservationsDel(RPC::JsonContext& context)
 {
+    if (context.app.config().reporting())
+        return rpcError(rpcREPORTING_UNSUPPORTED);
+
     auto const& params = context.params;
 
     // We repeat much of the parameter parsing from `doPeerReservationsAdd`.
@@ -96,7 +101,7 @@ doPeerReservationsDel(RPC::JsonContext& context)
     if (!params[jss::public_key].isString())
         return RPC::expected_field_error(jss::public_key, "a string");
 
-    boost::optional<PublicKey> optPk = parseBase58<PublicKey>(
+    std::optional<PublicKey> optPk = parseBase58<PublicKey>(
         TokenType::NodePublic, params[jss::public_key].asString());
     if (!optPk)
         return rpcError(rpcPUBLIC_MALFORMED);
@@ -115,6 +120,9 @@ doPeerReservationsDel(RPC::JsonContext& context)
 Json::Value
 doPeerReservationsList(RPC::JsonContext& context)
 {
+    if (context.app.config().reporting())
+        return rpcError(rpcREPORTING_UNSUPPORTED);
+
     auto const& reservations = context.app.peerReservations().list();
     // Enumerate the reservations in context.app.peerReservations()
     // as a Json::Value.

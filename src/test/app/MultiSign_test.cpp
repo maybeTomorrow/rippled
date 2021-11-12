@@ -1026,11 +1026,7 @@ public:
         // Now multisign a ttOFFER_CANCEL canceling the offer we just created.
         {
             aliceSeq = env.seq(alice);
-            Json::Value cancelOffer;
-            cancelOffer[jss::Account] = alice.human();
-            cancelOffer[jss::OfferSequence] = offerSeq;
-            cancelOffer[jss::TransactionType] = jss::OfferCancel;
-            env(cancelOffer,
+            env(offer_cancel(alice, offerSeq),
                 seq(aliceSeq),
                 msig(becky, bogie),
                 fee(3 * baseFee));
@@ -1481,6 +1477,47 @@ public:
     }
 
     void
+    test_signersWithTickets(FeatureBitset features)
+    {
+        testcase("Signers With Tickets");
+
+        using namespace jtx;
+        Env env{*this, features};
+        Account const alice{"alice", KeyType::ed25519};
+        env.fund(XRP(2000), alice);
+        env.close();
+
+        // Create a few tickets that alice can use up.
+        std::uint32_t aliceTicketSeq{env.seq(alice) + 1};
+        env(ticket::create(alice, 20));
+        env.close();
+        std::uint32_t const aliceSeq = env.seq(alice);
+
+        // Attach phantom signers to alice using a ticket.
+        env(signers(alice, 1, {{bogie, 1}, {demon, 1}}),
+            ticket::use(aliceTicketSeq++));
+        env.close();
+        env.require(tickets(alice, env.seq(alice) - aliceTicketSeq));
+        BEAST_EXPECT(env.seq(alice) == aliceSeq);
+
+        // This should work.
+        auto const baseFee = env.current()->fees().base;
+        env(noop(alice),
+            msig(bogie, demon),
+            fee(3 * baseFee),
+            ticket::use(aliceTicketSeq++));
+        env.close();
+        env.require(tickets(alice, env.seq(alice) - aliceTicketSeq));
+        BEAST_EXPECT(env.seq(alice) == aliceSeq);
+
+        // Should also be able to remove the signer list using a ticket.
+        env(signers(alice, jtx::none), ticket::use(aliceTicketSeq++));
+        env.close();
+        env.require(tickets(alice, env.seq(alice) - aliceTicketSeq));
+        BEAST_EXPECT(env.seq(alice) == aliceSeq);
+    }
+
+    void
     testAll(FeatureBitset features)
     {
         test_noReserve(features);
@@ -1499,6 +1536,7 @@ public:
         test_noMultiSigners(features);
         test_multisigningMultisigner(features);
         test_signForHash(features);
+        test_signersWithTickets(features);
     }
 
     void

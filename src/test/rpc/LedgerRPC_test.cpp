@@ -22,7 +22,6 @@
 #include <ripple/basics/StringUtilities.h>
 #include <ripple/beast/unit_test.h>
 #include <ripple/protocol/ErrorCodes.h>
-#include <ripple/protocol/Feature.h>
 #include <ripple/protocol/jss.h>
 #include <test/jtx.h>
 
@@ -72,8 +71,24 @@ class LedgerRPC_test : public beast::unit_test::suite
         BEAST_EXPECT(env.current()->info().seq == 4);
 
         {
-            // in this case, numeric string converted to number
-            auto const jrr = env.rpc("ledger", "1")[jss::result];
+            Json::Value jvParams;
+            // can be either numeric or quoted numeric
+            jvParams[jss::ledger_index] = 1;
+            auto const jrr =
+                env.rpc("json", "ledger", to_string(jvParams))[jss::result];
+            BEAST_EXPECT(jrr[jss::ledger][jss::closed] == true);
+            BEAST_EXPECT(jrr[jss::ledger][jss::ledger_index] == "1");
+            BEAST_EXPECT(jrr[jss::ledger][jss::accepted] == true);
+            BEAST_EXPECT(
+                jrr[jss::ledger][jss::totalCoins] ==
+                env.balance(env.master).value().getText());
+        }
+
+        {
+            Json::Value jvParams;
+            jvParams[jss::ledger_index] = "1";
+            auto const jrr =
+                env.rpc("json", "ledger", to_string(jvParams))[jss::result];
             BEAST_EXPECT(jrr[jss::ledger][jss::closed] == true);
             BEAST_EXPECT(jrr[jss::ledger][jss::ledger_index] == "1");
             BEAST_EXPECT(jrr[jss::ledger][jss::accepted] == true);
@@ -110,8 +125,18 @@ class LedgerRPC_test : public beast::unit_test::suite
         env.close();
 
         {
+            // ask for an arbitrary string - index
             Json::Value jvParams;
-            jvParams[jss::ledger_index] = "0";  // NOT an integer
+            jvParams[jss::ledger_index] = "potato";
+            auto const jrr =
+                env.rpc("json", "ledger", to_string(jvParams))[jss::result];
+            checkErrorValue(jrr, "invalidParams", "ledgerIndexMalformed");
+        }
+
+        {
+            // ask for a negative index
+            Json::Value jvParams;
+            jvParams[jss::ledger_index] = -1;
             auto const jrr =
                 env.rpc("json", "ledger", to_string(jvParams))[jss::result];
             checkErrorValue(jrr, "invalidParams", "ledgerIndexMalformed");
@@ -223,10 +248,10 @@ class LedgerRPC_test : public beast::unit_test::suite
 
         Env env{*this, envconfig(no_admin)};
 
-        env.close();
+        //        env.close();
 
         Json::Value jvParams;
-        jvParams[jss::ledger_index] = 3u;
+        jvParams[jss::ledger_index] = 1u;
         jvParams[jss::full] = true;
         auto const jrr =
             env.rpc("json", "ledger", to_string(jvParams))[jss::result];
@@ -393,8 +418,10 @@ class LedgerRPC_test : public beast::unit_test::suite
     void
     testLedgerEntryDepositPreauth()
     {
-        testcase("ledger_entry Request Directory");
+        testcase("ledger_entry Deposit Preauth");
+
         using namespace test::jtx;
+
         Env env{*this};
         Account const alice{"alice"};
         Account const becky{"becky"};
@@ -1075,6 +1102,124 @@ class LedgerRPC_test : public beast::unit_test::suite
     }
 
     void
+    testLedgerEntryTicket()
+    {
+        testcase("ledger_entry Request Ticket");
+        using namespace test::jtx;
+        Env env{*this};
+        env.close();
+
+        // Create two tickets.
+        std::uint32_t const tkt1{env.seq(env.master) + 1};
+        env(ticket::create(env.master, 2));
+        env.close();
+
+        std::string const ledgerHash{to_string(env.closed()->info().hash)};
+        // Request four tickets: one before the first one we created, the
+        // two created tickets, and the ticket that would come after the
+        // last created ticket.
+        {
+            // Not a valid ticket requested by index.
+            Json::Value jvParams;
+            jvParams[jss::ticket] =
+                to_string(getTicketIndex(env.master, tkt1 - 1));
+            jvParams[jss::ledger_hash] = ledgerHash;
+            Json::Value const jrr = env.rpc(
+                "json", "ledger_entry", to_string(jvParams))[jss::result];
+            checkErrorValue(jrr, "entryNotFound", "");
+        }
+        {
+            // First real ticket requested by index.
+            Json::Value jvParams;
+            jvParams[jss::ticket] = to_string(getTicketIndex(env.master, tkt1));
+            jvParams[jss::ledger_hash] = ledgerHash;
+            Json::Value const jrr = env.rpc(
+                "json", "ledger_entry", to_string(jvParams))[jss::result];
+            BEAST_EXPECT(
+                jrr[jss::node][sfLedgerEntryType.jsonName] == jss::Ticket);
+            BEAST_EXPECT(jrr[jss::node][sfTicketSequence.jsonName] == tkt1);
+        }
+        {
+            // Second real ticket requested by account and sequence.
+            Json::Value jvParams;
+            jvParams[jss::ticket] = Json::objectValue;
+            jvParams[jss::ticket][jss::account] = env.master.human();
+            jvParams[jss::ticket][jss::ticket_seq] = tkt1 + 1;
+            jvParams[jss::ledger_hash] = ledgerHash;
+            Json::Value const jrr = env.rpc(
+                "json", "ledger_entry", to_string(jvParams))[jss::result];
+            BEAST_EXPECT(
+                jrr[jss::node][jss::index] ==
+                to_string(getTicketIndex(env.master, tkt1 + 1)));
+        }
+        {
+            // Not a valid ticket requested by account and sequence.
+            Json::Value jvParams;
+            jvParams[jss::ticket] = Json::objectValue;
+            jvParams[jss::ticket][jss::account] = env.master.human();
+            jvParams[jss::ticket][jss::ticket_seq] = tkt1 + 2;
+            jvParams[jss::ledger_hash] = ledgerHash;
+            Json::Value const jrr = env.rpc(
+                "json", "ledger_entry", to_string(jvParams))[jss::result];
+            checkErrorValue(jrr, "entryNotFound", "");
+        }
+        {
+            // Request a ticket using an account root entry.
+            Json::Value jvParams;
+            jvParams[jss::ticket] = to_string(keylet::account(env.master).key);
+            jvParams[jss::ledger_hash] = ledgerHash;
+            Json::Value const jrr = env.rpc(
+                "json", "ledger_entry", to_string(jvParams))[jss::result];
+            checkErrorValue(jrr, "malformedRequest", "");
+        }
+        {
+            // Malformed account entry.
+            Json::Value jvParams;
+            jvParams[jss::ticket] = Json::objectValue;
+
+            std::string const badAddress = makeBadAddress(env.master.human());
+            jvParams[jss::ticket][jss::account] = badAddress;
+            jvParams[jss::ticket][jss::ticket_seq] = env.seq(env.master) - 1;
+            jvParams[jss::ledger_hash] = ledgerHash;
+            Json::Value const jrr = env.rpc(
+                "json", "ledger_entry", to_string(jvParams))[jss::result];
+            checkErrorValue(jrr, "malformedAddress", "");
+        }
+        {
+            // Malformed ticket object.  Missing account member.
+            Json::Value jvParams;
+            jvParams[jss::ticket] = Json::objectValue;
+            jvParams[jss::ticket][jss::ticket_seq] = env.seq(env.master) - 1;
+            jvParams[jss::ledger_hash] = ledgerHash;
+            Json::Value const jrr = env.rpc(
+                "json", "ledger_entry", to_string(jvParams))[jss::result];
+            checkErrorValue(jrr, "malformedRequest", "");
+        }
+        {
+            // Malformed ticket object.  Missing seq member.
+            Json::Value jvParams;
+            jvParams[jss::ticket] = Json::objectValue;
+            jvParams[jss::ticket][jss::account] = env.master.human();
+            jvParams[jss::ledger_hash] = ledgerHash;
+            Json::Value const jrr = env.rpc(
+                "json", "ledger_entry", to_string(jvParams))[jss::result];
+            checkErrorValue(jrr, "malformedRequest", "");
+        }
+        {
+            // Malformed ticket object.  Non-integral seq member.
+            Json::Value jvParams;
+            jvParams[jss::ticket] = Json::objectValue;
+            jvParams[jss::ticket][jss::account] = env.master.human();
+            jvParams[jss::ticket][jss::ticket_seq] =
+                std::to_string(env.seq(env.master) - 1);
+            jvParams[jss::ledger_hash] = ledgerHash;
+            Json::Value const jrr = env.rpc(
+                "json", "ledger_entry", to_string(jvParams))[jss::result];
+            checkErrorValue(jrr, "malformedRequest", "");
+        }
+    }
+
+    void
     testLedgerEntryUnknownOption()
     {
         testcase("ledger_entry Request Unknown Option");
@@ -1105,19 +1250,15 @@ class LedgerRPC_test : public beast::unit_test::suite
                                           // no amendments
         env.fund(XRP(10000), "alice");
         env.close();
+        log << env.closed()->info().hash;
         env.fund(XRP(10000), "bob");
         env.close();
+        log << env.closed()->info().hash;
         env.fund(XRP(10000), "jim");
         env.close();
+        log << env.closed()->info().hash;
         env.fund(XRP(10000), "jill");
 
-        // closed ledger hashes are:
-        // 1 - AB868A6CFEEC779C2FF845C0AF00A642259986AF40C01976A7F842B6918936C7
-        // 2 - 8AEDBB96643962F1D40F01E25632ABB3C56C9F04B0231EE4B18248B90173D189
-        // 3 - 7C3EEDB3124D92E49E75D81A8826A2E65A75FD71FC3FD6F36FEB803C5F1D812D
-        // 4 - 9F9E6A4ECAA84A08FF94713FA41C3151177D6222EA47DD2F0020CA49913EE2E6
-        // 5 - C516522DE274EB52CE69A3D22F66DD73A53E16597E06F7A86F66DF7DD4309173
-        //
         {
             // access via the legacy ledger field, keyword index values
             Json::Value jvParams;
@@ -1180,8 +1321,8 @@ class LedgerRPC_test : public beast::unit_test::suite
             // access via the ledger_hash field
             Json::Value jvParams;
             jvParams[jss::ledger_hash] =
-                "7C3EEDB3124D92E49E75D81A8826A2E6"
-                "5A75FD71FC3FD6F36FEB803C5F1D812D";
+                "2E81FC6EC0DD943197E0C7E3FBE9AE30"
+                "7F2775F2F7485BB37307984C3C0F2340";
             auto jrr = env.rpc(
                 "json",
                 "ledger",
@@ -1193,15 +1334,14 @@ class LedgerRPC_test : public beast::unit_test::suite
             // extra leading hex chars in hash will be ignored
             jvParams[jss::ledger_hash] =
                 "DEADBEEF"
-                "7C3EEDB3124D92E49E75D81A8826A2E6"
-                "5A75FD71FC3FD6F36FEB803C5F1D812D";
+                "2E81FC6EC0DD943197E0C7E3FBE9AE30"
+                "7F2775F2F7485BB37307984C3C0F2340";
             jrr = env.rpc(
                 "json",
                 "ledger",
                 boost::lexical_cast<std::string>(jvParams))[jss::result];
-            BEAST_EXPECT(jrr.isMember(jss::ledger));
-            BEAST_EXPECT(jrr.isMember(jss::ledger_hash));
-            BEAST_EXPECT(jrr[jss::ledger][jss::ledger_index] == "3");
+            BEAST_EXPECT(jrr[jss::error] == "invalidParams");
+            BEAST_EXPECT(jrr[jss::error_message] == "ledgerHashMalformed");
 
             // request with non-string ledger_hash
             jvParams[jss::ledger_hash] = 2;
@@ -1214,8 +1354,8 @@ class LedgerRPC_test : public beast::unit_test::suite
 
             // malformed (non hex) hash
             jvParams[jss::ledger_hash] =
-                "ZZZZZZZZZZZD92E49E75D81A8826A2E6"
-                "5A75FD71FC3FD6F36FEB803C5F1D812D";
+                "2E81FC6EC0DD943197EGC7E3FBE9AE30"
+                "7F2775F2F7485BB37307984C3C0F2340";
             jrr = env.rpc(
                 "json",
                 "ledger",
@@ -1560,6 +1700,7 @@ public:
         testLedgerEntryOffer();
         testLedgerEntryPayChan();
         testLedgerEntryRippleState();
+        testLedgerEntryTicket();
         testLedgerEntryUnknownOption();
         testLookupLedger();
         testNoQueue();

@@ -23,16 +23,16 @@
 
 namespace ripple {
 
-Message::Message(::google::protobuf::Message const& message, int type)
+Message::Message(
+    ::google::protobuf::Message const& message,
+    int type,
+    std::optional<PublicKey> const& validator)
     : category_(TrafficCount::categorize(message, type, false))
+    , validatorKey_(validator)
 {
     using namespace ripple::compression;
 
-#if defined(GOOGLE_PROTOBUF_VERSION) && (GOOGLE_PROTOBUF_VERSION >= 3011000)
-    auto const messageBytes = message.ByteSizeLong();
-#else
-    unsigned const messageBytes = message.ByteSize();
-#endif
+    auto const messageBytes = messageSize(message);
 
     assert(messageBytes != 0);
 
@@ -42,6 +42,26 @@ Message::Message(::google::protobuf::Message const& message, int type)
 
     if (messageBytes != 0)
         message.SerializeToArray(buffer_.data() + headerBytes, messageBytes);
+
+    assert(getBufferSize() == totalSize(message));
+}
+
+// static
+std::size_t
+Message::messageSize(::google::protobuf::Message const& message)
+{
+#if defined(GOOGLE_PROTOBUF_VERSION) && (GOOGLE_PROTOBUF_VERSION >= 3011000)
+    return message.ByteSizeLong();
+#else
+    return message.ByteSize();
+#endif
+}
+
+// static
+std::size_t
+Message::totalSize(::google::protobuf::Message const& message)
+{
+    return messageSize(message) + compression::headerBytes;
 }
 
 void
@@ -64,6 +84,9 @@ Message::compress()
             case protocol::mtLEDGER_DATA:
             case protocol::mtGET_OBJECTS:
             case protocol::mtVALIDATORLIST:
+            case protocol::mtVALIDATORLISTCOLLECTION:
+            case protocol::mtREPLAY_DELTA_RESPONSE:
+            case protocol::mtTRANSACTIONS:
                 return true;
             case protocol::mtPING:
             case protocol::mtCLUSTER:
@@ -71,10 +94,14 @@ Message::compress()
             case protocol::mtSTATUS_CHANGE:
             case protocol::mtHAVE_SET:
             case protocol::mtVALIDATION:
-            case protocol::mtGET_SHARD_INFO:
-            case protocol::mtSHARD_INFO:
             case protocol::mtGET_PEER_SHARD_INFO:
             case protocol::mtPEER_SHARD_INFO:
+            case protocol::mtPROOF_PATH_REQ:
+            case protocol::mtPROOF_PATH_RESPONSE:
+            case protocol::mtREPLAY_DELTA_REQ:
+            case protocol::mtGET_PEER_SHARD_INFO_V2:
+            case protocol::mtPEER_SHARD_INFO_V2:
+            case protocol::mtHAVE_TRANSACTIONS:
                 break;
         }
         return false;
@@ -171,6 +198,12 @@ Message::setHeader(
         pack(in, uncompressedBytes);
         *h |= static_cast<std::uint8_t>(compression);
     }
+}
+
+std::size_t
+Message::getBufferSize()
+{
+    return buffer_.size();
 }
 
 std::vector<uint8_t> const&

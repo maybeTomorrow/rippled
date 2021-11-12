@@ -26,10 +26,10 @@
 #include "org/xrpl/rpc/v1/transaction.pb.h"
 
 #include <ripple/app/misc/TxQ.h>
-#include <ripple/ledger/TxMeta.h>
 #include <ripple/protocol/Protocol.h>
 #include <ripple/protocol/STAmount.h>
 #include <ripple/protocol/STTx.h>
+#include <ripple/protocol/TxMeta.h>
 
 #include <functional>
 
@@ -42,7 +42,7 @@ convert(org::xrpl::rpc::v1::Meta& to, std::shared_ptr<TxMeta> const& from);
 void
 convert(
     org::xrpl::rpc::v1::QueueData& to,
-    std::map<TxSeq, TxQ::AccountTxDetails const> const& from);
+    std::vector<TxQ::TxDetails> const& from);
 
 void
 convert(

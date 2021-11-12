@@ -23,7 +23,7 @@
 #include <ripple/basics/safe_cast.h>
 #include <ripple/json/json_value.h>
 
-#include <boost/optional.hpp>
+#include <optional>
 #include <ostream>
 #include <string>
 
@@ -60,7 +60,7 @@ enum TELcodes : TERUnderlyingType {
     telCAN_NOT_QUEUE_BLOCKS,
     telCAN_NOT_QUEUE_BLOCKED,
     telCAN_NOT_QUEUE_FEE,
-    telCAN_NOT_QUEUE_FULL
+    telCAN_NOT_QUEUE_FULL,
 };
 
 //------------------------------------------------------------------------------
@@ -113,10 +113,12 @@ enum TEMcodes : TERUnderlyingType {
     temBAD_TICK_SIZE,
     temINVALID_ACCOUNT_ID,
     temCANNOT_PREAUTH_SELF,
+    temINVALID_COUNT,
 
-    // An intermediate result used internally, should never be returned.
-    temUNCERTAIN,
-    temUNKNOWN
+    temUNCERTAIN,  // An internal intermediate result; should never be returned.
+    temUNKNOWN,    // An internal intermediate result; should never be returned.
+
+    temSEQ_AND_TICKET,
 };
 
 //------------------------------------------------------------------------------
@@ -158,6 +160,7 @@ enum TEFcodes : TERUnderlyingType {
     tefBAD_AUTH_MASTER,
     tefINVARIANT_FAILED,
     tefTOO_BIG,
+    tefNO_TICKET,
 };
 
 //------------------------------------------------------------------------------
@@ -195,7 +198,8 @@ enum TERcodes : TERUnderlyingType {
                      // burden network.
     terLAST,         // DEPRECATED.
     terNO_RIPPLE,    // Rippling not allowed
-    terQUEUED        // Transaction is being held in TxQ until fee drops
+    terQUEUED,       // Transaction is being held in TxQ until fee drops
+    terPRE_TICKET,   // Ticket is not yet in ledger but might be on its way
 };
 
 //------------------------------------------------------------------------------
@@ -274,6 +278,7 @@ enum TECcodes : TERUnderlyingType {
     tecKILLED = 150,
     tecHAS_OBLIGATIONS = 151,
     tecTOO_SOON = 152,
+    tecHOOK_ERROR [[maybe_unused]] = 153
 };
 
 //------------------------------------------------------------------------------
@@ -344,7 +349,10 @@ public:
     }
 
     // Trait tells enable_if which types are allowed for construction.
-    template <typename T, typename = std::enable_if_t<Trait<T>::value>>
+    template <
+        typename T,
+        typename = std::enable_if_t<
+            Trait<std::remove_cv_t<std::remove_reference_t<T>>>::value>>
     constexpr TERSubset(T rhs) : code_(TERtoInt(rhs))
     {
     }
@@ -593,7 +601,7 @@ transToken(TER code);
 std::string
 transHuman(TER code);
 
-boost::optional<TER>
+std::optional<TER>
 transCode(std::string const& token);
 
 }  // namespace ripple

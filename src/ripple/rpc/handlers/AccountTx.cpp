@@ -21,6 +21,10 @@
 #include <ripple/app/main/Application.h>
 #include <ripple/app/misc/NetworkOPs.h>
 #include <ripple/app/misc/Transaction.h>
+#include <ripple/app/rdb/backend/RelationalDBInterfacePostgres.h>
+#include <ripple/app/rdb/backend/RelationalDBInterfaceSqlite.h>
+#include <ripple/core/Pg.h>
+#include <ripple/json/json_reader.h>
 #include <ripple/json/json_value.h>
 #include <ripple/ledger/ReadView.h>
 #include <ripple/net/RPCErr.h>
@@ -38,42 +42,14 @@
 
 namespace ripple {
 
-using LedgerSequence = uint32_t;
-using LedgerHash = uint256;
-using LedgerShortcut = RPC::LedgerShortcut;
+using TxnsData = RelationalDBInterface::AccountTxs;
+using TxnsDataBinary = RelationalDBInterface::MetaTxsList;
+using TxnDataBinary = RelationalDBInterface::txnMetaLedgerType;
+using AccountTxArgs = RelationalDBInterface::AccountTxArgs;
+using AccountTxResult = RelationalDBInterface::AccountTxResult;
 
-using AccountTxMarker = NetworkOPs::AccountTxMarker;
-
-struct LedgerRange
-{
-    uint32_t min;
-    uint32_t max;
-};
-
-using LedgerSpecifier =
-    std::variant<LedgerRange, LedgerShortcut, LedgerSequence, LedgerHash>;
-
-struct AccountTxArgs
-{
-    AccountID account;
-    std::optional<LedgerSpecifier> ledger;
-    bool binary = false;
-    bool forward = false;
-    uint32_t limit = 0;
-    std::optional<AccountTxMarker> marker;
-};
-
-using TxnsData = NetworkOPs::AccountTxs;
-using TxnsDataBinary = NetworkOPs::MetaTxsList;
-using TxnDataBinary = NetworkOPs::txnMetaLedgerType;
-
-struct AccountTxResult
-{
-    std::variant<TxnsData, TxnsDataBinary> transactions;
-    LedgerRange ledgerRange;
-    uint32_t limit;
-    std::optional<AccountTxMarker> marker;
-};
+using LedgerShortcut = RelationalDBInterface::LedgerShortcut;
+using LedgerSpecifier = RelationalDBInterface::LedgerSpecifier;
 
 // parses args into a ledger specifier, or returns a grpc status object on error
 std::variant<std::optional<LedgerSpecifier>, grpc::Status>
@@ -121,14 +97,17 @@ parseLedgerArgs(
         }
         else if (ledgerCase == LedgerCase::kHash)
         {
-            if (uint256::size() != specifier.hash().size())
+            if (auto hash = uint256::fromVoidChecked(specifier.hash()))
+            {
+                ledger = *hash;
+            }
+            else
             {
                 grpc::Status errorStatus{
                     grpc::StatusCode::INVALID_ARGUMENT,
                     "ledger hash malformed"};
                 return errorStatus;
             }
-            ledger = uint256::fromVoid(specifier.hash().data());
         }
         return ledger;
     }
@@ -165,7 +144,7 @@ parseLedgerArgs(Json::Value const& params)
         }
 
         LedgerHash hash;
-        if (!hash.SetHex(hashValue.asString()))
+        if (!hash.parseHex(hashValue.asString()))
         {
             RPC::Status status{rpcINVALID_PARAMS, "ledgerHashMalformed"};
             status.inject(response);
@@ -276,8 +255,13 @@ getLedgerRange(
 std::pair<AccountTxResult, RPC::Status>
 doAccountTxHelp(RPC::Context& context, AccountTxArgs const& args)
 {
-    AccountTxResult result;
     context.loadType = Resource::feeMediumBurdenRPC;
+    if (context.app.config().reporting())
+        return dynamic_cast<RelationalDBInterfacePostgres*>(
+                   &context.app.getRelationalDBInterface())
+            ->getAccountTx(args);
+
+    AccountTxResult result;
 
     auto lgrRange = getLedgerRange(context, args.ledger);
     if (auto stat = std::get_if<RPC::Status>(&lgrRange))
@@ -289,30 +273,56 @@ doAccountTxHelp(RPC::Context& context, AccountTxArgs const& args)
     result.ledgerRange = std::get<LedgerRange>(lgrRange);
 
     result.marker = args.marker;
+
+    RelationalDBInterface::AccountTxPageOptions options = {
+        args.account,
+        result.ledgerRange.min,
+        result.ledgerRange.max,
+        result.marker,
+        args.limit,
+        isUnlimited(context.role)};
+
     if (args.binary)
     {
-        result.transactions = context.netOps.getTxsAccountB(
-            args.account,
-            result.ledgerRange.min,
-            result.ledgerRange.max,
-            args.forward,
-            result.marker,
-            args.limit,
-            isUnlimited(context.role));
+        if (args.forward)
+        {
+            auto [tx, marker] = dynamic_cast<RelationalDBInterfaceSqlite*>(
+                                    &context.app.getRelationalDBInterface())
+                                    ->oldestAccountTxPageB(options);
+            result.transactions = tx;
+            result.marker = marker;
+        }
+        else
+        {
+            auto [tx, marker] = dynamic_cast<RelationalDBInterfaceSqlite*>(
+                                    &context.app.getRelationalDBInterface())
+                                    ->newestAccountTxPageB(options);
+            result.transactions = tx;
+            result.marker = marker;
+        }
     }
     else
     {
-        result.transactions = context.netOps.getTxsAccount(
-            args.account,
-            result.ledgerRange.min,
-            result.ledgerRange.max,
-            args.forward,
-            result.marker,
-            args.limit,
-            isUnlimited(context.role));
+        if (args.forward)
+        {
+            auto [tx, marker] = dynamic_cast<RelationalDBInterfaceSqlite*>(
+                                    &context.app.getRelationalDBInterface())
+                                    ->oldestAccountTxPage(options);
+            result.transactions = tx;
+            result.marker = marker;
+        }
+        else
+        {
+            auto [tx, marker] = dynamic_cast<RelationalDBInterfaceSqlite*>(
+                                    &context.app.getRelationalDBInterface())
+                                    ->newestAccountTxPage(options);
+            result.transactions = tx;
+            result.marker = marker;
+        }
     }
 
     result.limit = args.limit;
+    JLOG(context.j.debug()) << __func__ << " : finished";
 
     return {result, rpcSUCCESS};
 }
@@ -508,7 +518,11 @@ populateJsonResponse(
             response[jss::marker][jss::ledger] = result.marker->ledgerSeq;
             response[jss::marker][jss::seq] = result.marker->txnSeq;
         }
+        if (context.app.config().reporting())
+            response["used_postgres"] = true;
     }
+
+    JLOG(context.j.debug()) << __func__ << " : finished";
     return response;
 }
 
@@ -525,6 +539,9 @@ populateJsonResponse(
 Json::Value
 doAccountTxJson(RPC::JsonContext& context)
 {
+    if (!context.app.config().useTxTables())
+        return rpcError(rpcNOT_ENABLED);
+
     auto& params = context.params;
     AccountTxArgs args;
     Json::Value response;
@@ -572,6 +589,7 @@ doAccountTxJson(RPC::JsonContext& context)
     }
 
     auto res = doAccountTxHelp(context, args);
+    JLOG(context.j.debug()) << __func__ << " populating response";
     return populateJsonResponse(res, args, context);
 }
 
@@ -582,6 +600,13 @@ doAccountTxGrpc(
     RPC::GRPCContext<org::xrpl::rpc::v1::GetAccountTransactionHistoryRequest>&
         context)
 {
+    if (!context.app.config().useTxTables())
+    {
+        return {
+            {},
+            {grpc::StatusCode::UNIMPLEMENTED, "Not enabled in configuration."}};
+    }
+
     // return values
     org::xrpl::rpc::v1::GetAccountTransactionHistoryResponse response;
     grpc::Status status = grpc::Status::OK;

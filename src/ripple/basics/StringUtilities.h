@@ -24,51 +24,28 @@
 #include <ripple/basics/strHex.h>
 
 #include <boost/format.hpp>
-#include <boost/optional.hpp>
 #include <boost/utility/string_view.hpp>
+#include <optional>
 #include <sstream>
 #include <string>
 
 namespace ripple {
-inline static std::string
-sqlEscape(std::string const& strSrc)
-{
-    static boost::format f("X'%s'");
-    return str(boost::format(f) % strHex(strSrc));
-}
 
-inline static std::string
-sqlEscape(Blob const& vecSrc)
-{
-    size_t size = vecSrc.size();
+/** Format arbitrary binary data as an SQLite "blob literal".
 
-    if (size == 0)
-        return "X''";
+    In SQLite, blob literals must be encoded when used in a query. Per
+    https://sqlite.org/lang_expr.html#literal_values_constants_ they are
+    encoded as string literals containing hexadecimal data and preceded
+    by a single 'X' character.
 
-    std::string j(size * 2 + 3, 0);
-
-    unsigned char* oPtr = reinterpret_cast<unsigned char*>(&*j.begin());
-    const unsigned char* iPtr = &vecSrc[0];
-
-    *oPtr++ = 'X';
-    *oPtr++ = '\'';
-
-    for (int i = size; i != 0; --i)
-    {
-        unsigned char c = *iPtr++;
-        *oPtr++ = charHex(c >> 4);
-        *oPtr++ = charHex(c & 15);
-    }
-
-    *oPtr++ = '\'';
-    return j;
-}
-
-uint64_t
-uintFromHex(std::string const& strSrc);
+    @param blob An arbitrary blob of binary data
+    @return The input, encoded as a blob literal.
+ */
+std::string
+sqlBlobLiteral(Blob const& blob);
 
 template <class Iterator>
-boost::optional<Blob>
+std::optional<Blob>
 strUnHex(std::size_t strSize, Iterator begin, Iterator end)
 {
     Blob out;
@@ -108,13 +85,13 @@ strUnHex(std::size_t strSize, Iterator begin, Iterator end)
     return {std::move(out)};
 }
 
-inline boost::optional<Blob>
+inline std::optional<Blob>
 strUnHex(std::string const& strSrc)
 {
     return strUnHex(strSrc.size(), strSrc.cbegin(), strSrc.cend());
 }
 
-inline boost::optional<Blob>
+inline std::optional<Blob>
 strViewUnHex(boost::string_view const& strSrc)
 {
     return strUnHex(strSrc.size(), strSrc.cbegin(), strSrc.cend());
@@ -128,7 +105,7 @@ struct parsedURL
     std::string username;
     std::string password;
     std::string domain;
-    boost::optional<std::uint16_t> port;
+    std::optional<std::uint16_t> port;
     std::string path;
 
     bool
@@ -145,8 +122,17 @@ parseUrl(parsedURL& pUrl, std::string const& strUrl);
 std::string
 trim_whitespace(std::string str);
 
-boost::optional<std::uint64_t>
+std::optional<std::uint64_t>
 to_uint64(std::string const& s);
+
+/** Determines if the given string looks like a TOML-file hosting domain.
+
+    Do not use this function to determine if a particular string is a valid
+    domain, as this function may reject domains that are otherwise valid and
+    doesn't check whether the TLD is valid.
+ */
+bool
+isProperlyFormedTomlDomain(std::string const& domain);
 
 }  // namespace ripple
 

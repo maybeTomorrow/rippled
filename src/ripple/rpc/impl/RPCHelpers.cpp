@@ -20,6 +20,7 @@
 #include <ripple/app/ledger/LedgerMaster.h>
 #include <ripple/app/ledger/OpenLedger.h>
 #include <ripple/app/misc/Transaction.h>
+#include <ripple/app/rdb/RelationalDBInterface.h>
 #include <ripple/ledger/View.h>
 #include <ripple/net/RPCErr.h>
 #include <ripple/protocol/AccountID.h>
@@ -34,10 +35,10 @@
 namespace ripple {
 namespace RPC {
 
-boost::optional<AccountID>
+std::optional<AccountID>
 accountFromStringStrict(std::string const& account)
 {
-    boost::optional<AccountID> result;
+    std::optional<AccountID> result;
 
     auto const publicKey =
         parseBase58<PublicKey>(TokenType::AccountPublic, account);
@@ -63,10 +64,7 @@ accountFromStringWithCode(
     }
 
     if (bStrict)
-    {
-        auto id = deprecatedParseBitcoinAccountID(strIdent);
-        return id ? rpcACT_BITCOIN : rpcACT_MALFORMED;
-    }
+        return rpcACT_MALFORMED;
 
     // We allow the use of the seeds which is poor practice
     // and merely for debugging convenience.
@@ -95,7 +93,7 @@ bool
 getAccountObjects(
     ReadView const& ledger,
     AccountID const& account,
-    boost::optional<std::vector<LedgerEntryType>> const& typeFilter,
+    std::optional<std::vector<LedgerEntryType>> const& typeFilter,
     uint256 dirIndex,
     uint256 const& entryIndex,
     std::uint32_t const limit,
@@ -189,9 +187,9 @@ getAccountObjects(
 namespace {
 
 bool
-isValidatedOld(LedgerMaster& ledgerMaster, bool standalone)
+isValidatedOld(LedgerMaster& ledgerMaster, bool standaloneOrReporting)
 {
-    if (standalone)
+    if (standaloneOrReporting)
         return false;
 
     return ledgerMaster.getValidatedLedgerAge() > Tuning::maxValidatedLedgerAge;
@@ -224,74 +222,107 @@ ledgerFromRequest(T& ledger, JsonContext& context)
             return {rpcINVALID_PARAMS, "ledgerHashNotString"};
 
         uint256 ledgerHash;
-        if (!ledgerHash.SetHex(hashValue.asString()))
+        if (!ledgerHash.parseHex(hashValue.asString()))
             return {rpcINVALID_PARAMS, "ledgerHashMalformed"};
         return getLedger(ledger, ledgerHash, context);
     }
-    else if (indexValue.isNumeric())
-    {
-        return getLedger(ledger, indexValue.asInt(), context);
-    }
-    else
-    {
-        auto const index = indexValue.asString();
-        if (index == "validated")
-        {
-            return getLedger(ledger, LedgerShortcut::VALIDATED, context);
-        }
-        else
-        {
-            if (index.empty() || index == "current")
-                return getLedger(ledger, LedgerShortcut::CURRENT, context);
-            else if (index == "closed")
-                return getLedger(ledger, LedgerShortcut::CLOSED, context);
-            else
-            {
-                return {rpcINVALID_PARAMS, "ledgerIndexMalformed"};
-            }
-        }
-    }
 
-    return Status::OK;
+    auto const index = indexValue.asString();
+
+    if (index == "current" ||
+        (index.empty() && !context.app.config().reporting()))
+        return getLedger(ledger, LedgerShortcut::CURRENT, context);
+
+    if (index == "validated" ||
+        (index.empty() && context.app.config().reporting()))
+        return getLedger(ledger, LedgerShortcut::VALIDATED, context);
+
+    if (index == "closed")
+        return getLedger(ledger, LedgerShortcut::CLOSED, context);
+
+    std::uint32_t iVal;
+    if (beast::lexicalCastChecked(iVal, index))
+        return getLedger(ledger, iVal, context);
+
+    return {rpcINVALID_PARAMS, "ledgerIndexMalformed"};
 }
 }  // namespace
 
+template <class T, class R>
+Status
+ledgerFromRequest(T& ledger, GRPCContext<R>& context)
+{
+    R& request = context.params;
+    return ledgerFromSpecifier(ledger, request.ledger(), context);
+}
+
+// explicit instantiation of above function
+template Status
+ledgerFromRequest<>(
+    std::shared_ptr<ReadView const>&,
+    GRPCContext<org::xrpl::rpc::v1::GetAccountInfoRequest>&);
+
+// explicit instantiation of above function
+template Status
+ledgerFromRequest<>(
+    std::shared_ptr<ReadView const>&,
+    GRPCContext<org::xrpl::rpc::v1::GetLedgerEntryRequest>&);
+
+// explicit instantiation of above function
+template Status
+ledgerFromRequest<>(
+    std::shared_ptr<ReadView const>&,
+    GRPCContext<org::xrpl::rpc::v1::GetLedgerDataRequest>&);
+
+// explicit instantiation of above function
+template Status
+ledgerFromRequest<>(
+    std::shared_ptr<ReadView const>&,
+    GRPCContext<org::xrpl::rpc::v1::GetLedgerRequest>&);
+
 template <class T>
 Status
-ledgerFromRequest(
+ledgerFromSpecifier(
     T& ledger,
-    GRPCContext<org::xrpl::rpc::v1::GetAccountInfoRequest>& context)
+    org::xrpl::rpc::v1::LedgerSpecifier const& specifier,
+    Context& context)
 {
     ledger.reset();
 
-    org::xrpl::rpc::v1::GetAccountInfoRequest& request = context.params;
-
     using LedgerCase = org::xrpl::rpc::v1::LedgerSpecifier::LedgerCase;
-    LedgerCase ledgerCase = request.ledger().ledger_case();
+    LedgerCase ledgerCase = specifier.ledger_case();
     switch (ledgerCase)
     {
         case LedgerCase::kHash: {
-            uint256 ledgerHash =
-                uint256::fromVoid(request.ledger().hash().data());
-            return getLedger(ledger, ledgerHash, context);
+            if (auto hash = uint256::fromVoidChecked(specifier.hash()))
+            {
+                return getLedger(ledger, *hash, context);
+            }
+            return {rpcINVALID_PARAMS, "ledgerHashMalformed"};
         }
         case LedgerCase::kSequence:
-            return getLedger(ledger, request.ledger().sequence(), context);
+            return getLedger(ledger, specifier.sequence(), context);
         case LedgerCase::kShortcut:
             [[fallthrough]];
         case LedgerCase::LEDGER_NOT_SET: {
-            auto const shortcut = request.ledger().shortcut();
+            auto const shortcut = specifier.shortcut();
+            // note, unspecified defaults to validated in reporting mode
             if (shortcut ==
-                org::xrpl::rpc::v1::LedgerSpecifier::SHORTCUT_VALIDATED)
+                    org::xrpl::rpc::v1::LedgerSpecifier::SHORTCUT_VALIDATED ||
+                (shortcut ==
+                     org::xrpl::rpc::v1::LedgerSpecifier::
+                         SHORTCUT_UNSPECIFIED &&
+                 context.app.config().reporting()))
+            {
                 return getLedger(ledger, LedgerShortcut::VALIDATED, context);
+            }
             else
             {
-                // note, if unspecified, defaults to current ledger
                 if (shortcut ==
-                        org::xrpl::rpc::v1::LedgerSpecifier::
-                            SHORTCUT_UNSPECIFIED ||
+                        org::xrpl::rpc::v1::LedgerSpecifier::SHORTCUT_CURRENT ||
                     shortcut ==
-                        org::xrpl::rpc::v1::LedgerSpecifier::SHORTCUT_CURRENT)
+                        org::xrpl::rpc::v1::LedgerSpecifier::
+                            SHORTCUT_UNSPECIFIED)
                 {
                     return getLedger(ledger, LedgerShortcut::CURRENT, context);
                 }
@@ -308,17 +339,9 @@ ledgerFromRequest(
     return Status::OK;
 }
 
-// explicit instantiation of above function
-template Status
-ledgerFromRequest<>(
-    std::shared_ptr<ReadView const>&,
-    GRPCContext<org::xrpl::rpc::v1::GetAccountInfoRequest>&);
-
+template <class T>
 Status
-getLedger(
-    std::shared_ptr<ReadView const>& ledger,
-    uint256 const& ledgerHash,
-    Context& context)
+getLedger(T& ledger, uint256 const& ledgerHash, Context& context)
 {
     ledger = context.ledgerMaster.getLedgerByHash(ledgerHash);
     if (ledger == nullptr)
@@ -333,6 +356,8 @@ getLedger(T& ledger, uint32_t ledgerIndex, Context& context)
     ledger = context.ledgerMaster.getLedgerBySeq(ledgerIndex);
     if (ledger == nullptr)
     {
+        if (context.app.config().reporting())
+            return {rpcLGR_NOT_FOUND, "ledgerNotFound"};
         auto cur = context.ledgerMaster.getCurrentLedger();
         if (cur->info().seq == ledgerIndex)
         {
@@ -359,7 +384,10 @@ template <class T>
 Status
 getLedger(T& ledger, LedgerShortcut shortcut, Context& context)
 {
-    if (isValidatedOld(context.ledgerMaster, context.app.config().standalone()))
+    if (isValidatedOld(
+            context.ledgerMaster,
+            context.app.config().standalone() ||
+                context.app.config().reporting()))
     {
         if (context.apiVersion == 1)
             return {rpcNO_NETWORK, "InsufficientNetworkMode"};
@@ -382,11 +410,18 @@ getLedger(T& ledger, LedgerShortcut shortcut, Context& context)
     {
         if (shortcut == LedgerShortcut::CURRENT)
         {
+            if (context.app.config().reporting())
+                return {
+                    rpcLGR_NOT_FOUND,
+                    "Reporting does not track current ledger"};
             ledger = context.ledgerMaster.getCurrentLedger();
             assert(ledger->open());
         }
         else if (shortcut == LedgerShortcut::CLOSED)
         {
+            if (context.app.config().reporting())
+                return {
+                    rpcLGR_NOT_FOUND, "Reporting does not track closed ledger"};
             ledger = context.ledgerMaster.getClosedLedger();
             assert(!ledger->open());
         }
@@ -426,12 +461,18 @@ getLedger<>(
     LedgerShortcut shortcut,
     Context&);
 
+template Status
+getLedger<>(std::shared_ptr<ReadView const>&, uint256 const&, Context&);
+
 bool
 isValidated(
     LedgerMaster& ledgerMaster,
     ReadView const& ledger,
     Application& app)
 {
+    if (app.config().reporting())
+        return true;
+
     if (ledger.open())
         return false;
 
@@ -453,7 +494,8 @@ isValidated(
             if (hash)
             {
                 assert(hash->isNonZero());
-                uint256 valHash = getHashByIndex(seq, app);
+                uint256 valHash =
+                    app.getRelationalDBInterface().getHashByIndex(seq);
                 if (valHash == ledger.info().hash)
                 {
                     // SQL database doesn't match ledger chain
@@ -571,7 +613,7 @@ injectSLE(Json::Value& jv, SLE const& sle)
     }
 }
 
-boost::optional<Json::Value>
+std::optional<Json::Value>
 readLimitField(
     unsigned int& limit,
     Tuning::LimitRange const& range,
@@ -587,17 +629,17 @@ readLimitField(
         if (!isUnlimited(context.role))
             limit = std::max(range.rmin, std::min(range.rmax, limit));
     }
-    return boost::none;
+    return std::nullopt;
 }
 
-boost::optional<Seed>
+std::optional<Seed>
 parseRippleLibSeed(Json::Value const& value)
 {
     // ripple-lib encodes seed used to generate an Ed25519 wallet in a
     // non-standard way. While rippled never encode seeds that way, we
     // try to detect such keys to avoid user confusion.
     if (!value.isString())
-        return boost::none;
+        return std::nullopt;
 
     auto const result = decodeBase58Token(value.asString(), TokenType::None);
 
@@ -606,10 +648,10 @@ parseRippleLibSeed(Json::Value const& value)
         static_cast<std::uint8_t>(result[1]) == std::uint8_t(0x4B))
         return Seed(makeSlice(result.substr(2)));
 
-    return boost::none;
+    return std::nullopt;
 }
 
-boost::optional<Seed>
+std::optional<Seed>
 getSeedFromRPC(Json::Value const& params, Json::Value& error)
 {
     // The array should be constexpr, but that makes Visual Studio unhappy.
@@ -634,20 +676,20 @@ getSeedFromRPC(Json::Value const& params, Json::Value& error)
             "Exactly one of the following must be specified: " +
             std::string(jss::passphrase) + ", " + std::string(jss::seed) +
             " or " + std::string(jss::seed_hex));
-        return boost::none;
+        return std::nullopt;
     }
 
     // Make sure a string is present
     if (!params[seedType].isString())
     {
         error = RPC::expected_field_error(seedType, "string");
-        return boost::none;
+        return std::nullopt;
     }
 
     auto const fieldContents = params[seedType].asString();
 
     // Convert string to seed.
-    boost::optional<Seed> seed;
+    std::optional<Seed> seed;
 
     if (seedType == jss::seed.c_str())
         seed = parseBase58<Seed>(fieldContents);
@@ -657,7 +699,7 @@ getSeedFromRPC(Json::Value const& params, Json::Value& error)
     {
         uint128 s;
 
-        if (s.SetHexExact(fieldContents))
+        if (s.parseHex(fieldContents))
             seed.emplace(Slice(s.data(), s.size()));
     }
 
@@ -708,8 +750,8 @@ keypairForSignature(Json::Value const& params, Json::Value& error)
         return {};
     }
 
-    boost::optional<KeyType> keyType;
-    boost::optional<Seed> seed;
+    std::optional<KeyType> keyType;
+    std::optional<Seed> seed;
 
     if (has_key_type)
     {
@@ -797,10 +839,10 @@ keypairForSignature(Json::Value const& params, Json::Value& error)
 std::pair<RPC::Status, LedgerEntryType>
 chooseLedgerEntryType(Json::Value const& params)
 {
-    std::pair<RPC::Status, LedgerEntryType> result{RPC::Status::OK, ltINVALID};
+    std::pair<RPC::Status, LedgerEntryType> result{RPC::Status::OK, ltANY};
     if (params.isMember(jss::type))
     {
-        static std::array<std::pair<char const*, LedgerEntryType>, 13> const
+        static constexpr std::array<std::pair<char const*, LedgerEntryType>, 13>
             types{
                 {{jss::account, ltACCOUNT_ROOT},
                  {jss::amendments, ltAMENDMENTS},
@@ -847,13 +889,14 @@ beast::SemanticVersion const goodVersion("1.0.0");
 beast::SemanticVersion const lastVersion("1.0.0");
 
 unsigned int
-getAPIVersionNumber(Json::Value const& jv)
+getAPIVersionNumber(Json::Value const& jv, bool betaEnabled)
 {
-    static Json::Value const minVersion(RPC::ApiMinimumSupportedVersion);
-    static Json::Value const maxVersion(RPC::ApiMaximumSupportedVersion);
-    static Json::Value const invalidVersion(RPC::APIInvalidVersion);
+    static Json::Value const minVersion(RPC::apiMinimumSupportedVersion);
+    static Json::Value const invalidVersion(RPC::apiInvalidVersion);
 
-    Json::Value requestedVersion(RPC::APIVersionIfUnspecified);
+    Json::Value const maxVersion(
+        betaEnabled ? RPC::apiBetaVersion : RPC::apiMaximumSupportedVersion);
+    Json::Value requestedVersion(RPC::apiVersionIfUnspecified);
     if (jv.isObject())
     {
         requestedVersion = jv.get(jss::api_version, requestedVersion);

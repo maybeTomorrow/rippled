@@ -69,20 +69,6 @@ class AccountCurrencies_test : public beast::unit_test::suite
             BEAST_EXPECT(result[jss::error_message] == "Account malformed.");
         }
 
-        {  // strict mode, using properly formatted bitcoin token
-            Json::Value params;
-            params[jss::account] = base58EncodeTokenBitcoin(
-                TokenType::AccountID, alice.id().data(), alice.id().size());
-            params[jss::strict] = true;
-            auto const result = env.rpc(
-                "json",
-                "account_currencies",
-                boost::lexical_cast<std::string>(params))[jss::result];
-            BEAST_EXPECT(result[jss::error] == "actBitcoin");
-            BEAST_EXPECT(
-                result[jss::error_message] == "Account is bitcoin address.");
-        }
-
         {  // ask for nonexistent account
             Json::Value params;
             params[jss::account] = Account{"bob"}.human();
@@ -107,7 +93,7 @@ class AccountCurrencies_test : public beast::unit_test::suite
         auto const gw = Account{"gateway"};
         env.fund(XRP(10000), alice, gw);
         char currencySuffix{'A'};
-        std::vector<boost::optional<IOU>> gwCurrencies(26);  // A - Z
+        std::vector<std::optional<IOU>> gwCurrencies(26);  // A - Z
         std::generate(gwCurrencies.begin(), gwCurrencies.end(), [&]() {
             auto gwc = gw[std::string("US") + currencySuffix++];
             env(trust(alice, gwc(100)));
@@ -125,12 +111,11 @@ class AccountCurrencies_test : public beast::unit_test::suite
         auto arrayCheck =
             [&result](
                 Json::StaticString const& fld,
-                std::vector<boost::optional<IOU>> const& expected) -> bool {
+                std::vector<std::optional<IOU>> const& expected) -> bool {
             bool stat = result.isMember(fld) && result[fld].isArray() &&
                 result[fld].size() == expected.size();
             for (size_t i = 0; stat && i < expected.size(); ++i)
             {
-                Currency foo;
                 stat &=
                     (to_string(expected[i].value().currency) ==
                      result[fld][i].asString());

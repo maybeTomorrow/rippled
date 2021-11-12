@@ -86,7 +86,7 @@ enum error_code_i {
     rpcNO_PF_REQUEST = 33,
 
     // Bad parameter
-    rpcACT_BITCOIN = 34,
+    // NOT USED DO NOT USE AGAIN rpcACT_BITCOIN = 34,
     rpcACT_MALFORMED = 35,
     rpcALREADY_MULTISIG = 36,
     rpcALREADY_SINGLE_SIG = 37,
@@ -134,8 +134,13 @@ enum error_code_i {
     rpcDB_DESERIALIZATION = 77,
     rpcEXCESSIVE_LGR_RANGE = 78,
     rpcINVALID_LGR_RANGE = 79,
+    rpcEXPIRED_VALIDATOR_LIST = 80,
+
+    // Reporting
+    rpcFAILED_TO_FORWARD = 90,
+    rpcREPORTING_UNSUPPORTED = 91,
     rpcLAST =
-        rpcINVALID_LGR_RANGE  // rpcLAST should always equal the last code.=
+        rpcREPORTING_UNSUPPORTED  // rpcLAST should always equal the last code.=
 };
 
 /** Codes returned in the `warnings` array of certain RPC commands.
@@ -145,6 +150,8 @@ enum error_code_i {
 enum warning_code_i {
     warnRPC_UNSUPPORTED_MAJORITY = 1001,
     warnRPC_AMENDMENT_BLOCKED = 1002,
+    warnRPC_EXPIRED_VALIDATOR_LIST = 1003,
+    warnRPC_REPORTING = 1004
 };
 
 //------------------------------------------------------------------------------

@@ -25,22 +25,19 @@
 #include <ripple/protocol/STLedgerEntry.h>
 #include <ripple/protocol/jss.h>
 #include <boost/format.hpp>
+#include <limits>
 
 namespace ripple {
 
 STLedgerEntry::STLedgerEntry(Keylet const& k)
     : STObject(sfLedgerEntry), key_(k.key), type_(k.type)
 {
-    if (!(0u <= type_ &&
-          type_ <= std::min<unsigned>(
-                       std::numeric_limits<std::uint16_t>::max(),
-                       std::numeric_limits<
-                           std::underlying_type_t<LedgerEntryType>>::max())))
-        Throw<std::runtime_error>("invalid ledger entry type: out of range");
     auto const format = LedgerFormats::getInstance().findByType(type_);
 
     if (format == nullptr)
-        Throw<std::runtime_error>("invalid ledger entry type");
+        Throw<std::runtime_error>(
+            "Attempt to create a SLE of unknown type " +
+            std::to_string(safe_cast<std::uint16_t>(k.type)));
 
     set(format->getSOTemplate());
 

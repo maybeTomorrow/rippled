@@ -23,6 +23,7 @@
 #include <boost/algorithm/string/predicate.hpp>
 
 namespace ripple {
+
 namespace NodeStore {
 
 ManagerImp&
@@ -43,40 +44,42 @@ ManagerImp::missing_backend()
 std::unique_ptr<Backend>
 ManagerImp::make_Backend(
     Section const& parameters,
+    std::size_t burstSize,
     Scheduler& scheduler,
     beast::Journal journal)
 {
-    std::string const type{get<std::string>(parameters, "type")};
+    std::string const type{get(parameters, "type")};
     if (type.empty())
         missing_backend();
 
     auto factory{find(type)};
     if (!factory)
+    {
+#ifndef RIPPLED_REPORTING
+        if (boost::iequals(type, "cassandra"))
+            Throw<std::runtime_error>(
+                "To use Cassandra as a nodestore, build rippled with "
+                "-Dreporting=ON");
+#endif
         missing_backend();
+    }
 
     return factory->createInstance(
-        NodeObject::keyBytes, parameters, scheduler, journal);
+        NodeObject::keyBytes, parameters, burstSize, scheduler, journal);
 }
 
 std::unique_ptr<Database>
 ManagerImp::make_Database(
-    std::string const& name,
+    std::size_t burstSize,
     Scheduler& scheduler,
     int readThreads,
-    Stoppable& parent,
     Section const& config,
     beast::Journal journal)
 {
-    auto backend{make_Backend(config, scheduler, journal)};
+    auto backend{make_Backend(config, burstSize, scheduler, journal)};
     backend->open();
     return std::make_unique<DatabaseNodeImp>(
-        name,
-        scheduler,
-        readThreads,
-        parent,
-        std::move(backend),
-        config,
-        journal);
+        scheduler, readThreads, std::move(backend), config, journal);
 }
 
 void
@@ -117,17 +120,6 @@ Manager&
 Manager::instance()
 {
     return ManagerImp::instance();
-}
-
-//------------------------------------------------------------------------------
-
-std::unique_ptr<Backend>
-make_Backend(
-    Section const& config,
-    Scheduler& scheduler,
-    beast::Journal journal)
-{
-    return Manager::instance().make_Backend(config, scheduler, journal);
 }
 
 }  // namespace NodeStore

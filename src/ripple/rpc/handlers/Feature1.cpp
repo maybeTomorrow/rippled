@@ -20,7 +20,6 @@
 #include <ripple/app/ledger/LedgerMaster.h>
 #include <ripple/app/main/Application.h>
 #include <ripple/app/misc/AmendmentTable.h>
-#include <ripple/beast/core/LexicalCast.h>
 #include <ripple/net/RPCErr.h>
 #include <ripple/protocol/ErrorCodes.h>
 #include <ripple/protocol/jss.h>
@@ -35,6 +34,9 @@ namespace ripple {
 Json::Value
 doFeature(RPC::JsonContext& context)
 {
+    if (context.app.config().reporting())
+        return rpcError(rpcREPORTING_UNSUPPORTED);
+
     // Get majority amendment status
     majorityAmendments_t majorities;
 
@@ -60,8 +62,9 @@ doFeature(RPC::JsonContext& context)
 
     auto feature = table.find(context.params[jss::feature].asString());
 
-    if (!feature &&
-        !feature.SetHexExact(context.params[jss::feature].asString()))
+    // If the feature is not found by name, try to parse the `feature` param as
+    // a feature ID. If that fails, return an error.
+    if (!feature && !feature.parseHex(context.params[jss::feature].asString()))
         return rpcError(rpcBAD_FEATURE);
 
     if (context.params.isMember(jss::vetoed))

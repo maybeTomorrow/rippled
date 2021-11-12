@@ -26,9 +26,9 @@
 #include <ripple/basics/UnorderedContainers.h>
 #include <ripple/basics/base_uint.h>
 #include <ripple/json/json_value.h>
-#include <boost/optional.hpp>
 #include <cstddef>
 #include <mutex>
+#include <optional>
 #include <string>
 
 namespace ripple {
@@ -51,40 +51,11 @@ std::string
 toBase58(AccountID const& v);
 
 /** Parse AccountID from checked, base58 string.
-    @return boost::none if a parse error occurs
+    @return std::nullopt if a parse error occurs
 */
 template <>
-boost::optional<AccountID>
+std::optional<AccountID>
 parseBase58(std::string const& s);
-
-// Parses AccountID using Bitcoin's alphabet
-// This is to catch user error. Likely not needed
-// DEPRECATED
-boost::optional<AccountID>
-deprecatedParseBitcoinAccountID(std::string const& s);
-
-// Compatibility with legacy code
-bool
-deprecatedParseBase58(AccountID& account, Json::Value const& jv);
-
-/** Parse AccountID from hexadecimal string
-
-    If the string is not exactly 40
-    hex digits, boost::none is returned.
-
-    @return boost::none if a parse error occurs
-*/
-template <>
-boost::optional<AccountID>
-parseHex(std::string const& s);
-
-/** Parse AccountID from hex or checked base58 string.
-
-    @return boost::none if a parse error occurs
-*/
-template <>
-boost::optional<AccountID>
-parseHexOrBase58(std::string const& s);
 
 /** Compute AccountID from public key.
 

@@ -19,6 +19,7 @@
 
 #include <ripple/app/main/Application.h>
 #include <ripple/app/main/DBInit.h>
+#include <ripple/app/rdb/RelationalDBInterface_global.h>
 #include <ripple/basics/Log.h>
 #include <ripple/basics/StringUtilities.h>
 #include <ripple/basics/contract.h>
@@ -26,7 +27,6 @@
 #include <ripple/beast/core/CurrentThreadName.h>
 #include <ripple/core/Config.h>
 #include <ripple/core/ConfigSections.h>
-#include <ripple/core/DatabaseCon.h>
 #include <ripple/core/TimeKeeper.h>
 #include <ripple/json/to_string.h>
 #include <ripple/net/RPCCall.h>
@@ -34,8 +34,10 @@
 #include <ripple/resource/Fees.h>
 #include <ripple/rpc/RPCHandler.h>
 
+#ifdef ENABLE_TESTS
 #include <beast/unit_test/match.hpp>
 #include <test/unit_test/multi_runner.h>
+#endif  // ENABLE_TESTS
 
 #include <google/protobuf/stubs/common.h>
 
@@ -156,7 +158,8 @@ printHelp(const po::options_description& desc)
            "     ledger_current\n"
            "     ledger_request <ledger>\n"
            "     log_level [[<partition>] <severity>]\n"
-           "     logrotate \n"
+           "     logrotate\n"
+           "     node_to_shard [status|start|stop]\n"
            "     peers\n"
            "     ping\n"
            "     random\n"
@@ -183,6 +186,7 @@ printHelp(const po::options_description& desc)
 
 //------------------------------------------------------------------------------
 
+#ifdef ENABLE_TESTS
 /* simple unit test selector that allows a comma separated list
  * of selectors
  */
@@ -213,10 +217,38 @@ public:
                 return true;
         return false;
     }
+
+    std::size_t
+    size() const
+    {
+        return selectors_.size();
+    }
 };
 
 namespace test {
 extern std::atomic<bool> envUseIPv4;
+}
+
+template <class Runner>
+static bool
+anyMissing(Runner& runner, multi_selector const& pred)
+{
+    if (runner.tests() == 0)
+    {
+        runner.add_failures(1);
+        std::cout << "Failed: No tests run" << std::endl;
+        return true;
+    }
+    if (runner.suites() < pred.size())
+    {
+        auto const missing = pred.size() - runner.suites();
+        runner.add_failures(missing);
+        std::cout << "Failed: " << missing
+                  << " filters did not match any existing test suites"
+                  << std::endl;
+        return true;
+    }
+    return false;
 }
 
 static int
@@ -242,7 +274,9 @@ runUnitTests(
 
         multi_runner_child child_runner{num_jobs, quiet, log};
         child_runner.arg(argument);
-        auto const any_failed = child_runner.run_multi(multi_selector(pattern));
+        multi_selector pred(pattern);
+        auto const any_failed =
+            child_runner.run_multi(pred) || anyMissing(child_runner, pred);
 
         if (any_failed)
             return EXIT_FAILURE;
@@ -267,6 +301,7 @@ runUnitTests(
                 boost::process::exe = exe_name, boost::process::args = args);
 
         int bad_child_exits = 0;
+        int terminated_child_exits = 0;
         for (auto& c : children)
         {
             try
@@ -279,8 +314,12 @@ runUnitTests(
             {
                 // wait throws if process was terminated with a signal
                 ++bad_child_exits;
+                ++terminated_child_exits;
             }
         }
+
+        parent_runner.add_failures(terminated_child_exits);
+        anyMissing(parent_runner, multi_selector(pattern));
 
         if (parent_runner.any_failed() || bad_child_exits)
             return EXIT_FAILURE;
@@ -299,6 +338,7 @@ runUnitTests(
     }
 }
 
+#endif  // ENABLE_TESTS
 //------------------------------------------------------------------------------
 
 int
@@ -320,12 +360,6 @@ run(int argc, char** argv)
         importText += ConfigSection::nodeDatabase();
         importText += "] configuration file section).";
     }
-    std::string shardsText;
-    {
-        shardsText += "Validate an existing shard database (specified in the [";
-        shardsText += ConfigSection::shardDatabase();
-        shardsText += "] configuration file section).";
-    }
 
     // Set up option parsing.
     //
@@ -337,6 +371,7 @@ run(int argc, char** argv)
         "quorum",
         po::value<std::size_t>(),
         "Override the minimum validation quorum.")(
+        "reportingReadOnly", "Run in read-only reporting mode")(
         "silent", "No output to the console after startup.")(
         "standalone,a", "Run with no peers.")("verbose,v", "Verbose logging.")(
         "version", "Display the build version.");
@@ -354,9 +389,11 @@ run(int argc, char** argv)
         "nodetoshard", "Import node store into shards")(
         "replay", "Replay a ledger close.")(
         "start", "Start from a fresh Ledger.")(
+        "startReporting",
+        po::value<std::string>(),
+        "Start reporting from a fresh Ledger.")(
         "vacuum", "VACUUM the transaction db.")(
-        "valid", "Consider the initial ledger a valid network ledger.")(
-        "validateShards", shardsText.c_str());
+        "valid", "Consider the initial ledger a valid network ledger.");
 
     po::options_description rpc("RPC Client Options");
     rpc.add_options()(
@@ -372,6 +409,7 @@ run(int argc, char** argv)
         "DEPRECATED: include with rpc_ip instead. "
         "Specify the port number for RPC command.");
 
+#ifdef ENABLE_TESTS
     po::options_description test("Unit Test Options");
     test.add_options()(
         "quiet,q",
@@ -400,6 +438,7 @@ run(int argc, char** argv)
         "unittest-jobs",
         po::value<std::size_t>(),
         "Number of unittest jobs to run in parallel (child processes).");
+#endif  // ENABLE_TESTS
 
     // These are hidden options, not intended to be shown in the usage/help
     // message
@@ -410,20 +449,37 @@ run(int argc, char** argv)
         "Specify rpc command and parameters. This option must be repeated "
         "for each command/param. Positional parameters also serve this "
         "purpose, "
-        "so this option is not needed for users")(
-        "unittest-child",
-        "For internal use only when spawning child unit test processes.")(
-        "fg", "Deprecated: server always in foreground mode.");
+        "so this option is not needed for users")
+#ifdef ENABLE_TESTS
+        ("unittest-child",
+         "For internal use only when spawning child unit test processes.")
+#else
+        ("unittest", "Disabled in this build.")(
+            "unittest-child", "Disabled in this build.")
+#endif  // ENABLE_TESTS
+            ("fg", "Deprecated: server always in foreground mode.");
 
     // Interpret positional arguments as --parameters.
     po::positional_options_description p;
     p.add("parameters", -1);
 
     po::options_description all;
-    all.add(gen).add(rpc).add(data).add(test).add(hidden);
+    all.add(gen)
+        .add(rpc)
+        .add(data)
+#ifdef ENABLE_TESTS
+        .add(test)
+#endif  // ENABLE_TESTS
+        .add(hidden);
 
     po::options_description desc;
-    desc.add(gen).add(rpc).add(data).add(test);
+    desc.add(gen)
+        .add(rpc)
+        .add(data)
+#ifdef ENABLE_TESTS
+        .add(test)
+#endif  // ENABLE_TESTS
+        ;
 
     // Parse options, if no error.
     try
@@ -456,6 +512,14 @@ run(int argc, char** argv)
         return 0;
     }
 
+#ifndef ENABLE_TESTS
+    if (vm.count("unittest") || vm.count("unittest-child"))
+    {
+        std::cerr << "rippled: Tests disabled in this build." << std::endl;
+        std::cerr << "Try 'rippled --help' for a list of options." << std::endl;
+        return 1;
+    }
+#else
     // Run the unit tests if requested.
     // The unit tests will exit the application with an appropriate return code.
     //
@@ -495,6 +559,7 @@ run(int argc, char** argv)
             return 1;
         }
     }
+#endif  // ENABLE_TESTS
 
     auto config = std::make_unique<Config>();
 
@@ -516,48 +581,11 @@ run(int argc, char** argv)
             return -1;
         }
 
-        using namespace boost::filesystem;
-        DatabaseCon::Setup const dbSetup = setup_DatabaseCon(*config);
-        path dbPath = dbSetup.dataDir / TxDBName;
-
         try
         {
-            uintmax_t const dbSize = file_size(dbPath);
-            assert(dbSize != static_cast<uintmax_t>(-1));
-
-            if (auto available = space(dbPath.parent_path()).available;
-                available < dbSize)
-            {
-                std::cerr << "The database filesystem must have at least as "
-                             "much free space as the size of "
-                          << dbPath.string() << ", which is " << dbSize
-                          << " bytes. Only " << available
-                          << " bytes are available.\n";
+            auto setup = setup_DatabaseCon(*config);
+            if (!doVacuumDB(setup))
                 return -1;
-            }
-
-            auto txnDB = std::make_unique<DatabaseCon>(
-                dbSetup, TxDBName, TxDBPragma, TxDBInit);
-            auto& session = txnDB->getSession();
-            std::uint32_t pageSize;
-
-            // Only the most trivial databases will fit in memory on typical
-            // (recommended) software. Force temp files to be written to disk
-            // regardless of the config settings.
-            session << boost::format(CommonDBPragmaTemp) % "file";
-            session << "PRAGMA page_size;", soci::into(pageSize);
-
-            std::cout << "VACUUM beginning. page_size: " << pageSize
-                      << std::endl;
-
-            session << "VACUUM;";
-            assert(dbSetup.globalPragma);
-            for (auto const& p : *dbSetup.globalPragma)
-                session << p;
-            session << "PRAGMA page_size;", soci::into(pageSize);
-
-            std::cout << "VACUUM finished. page_size: " << pageSize
-                      << std::endl;
         }
         catch (std::exception const& e)
         {
@@ -570,16 +598,26 @@ run(int argc, char** argv)
     }
 
     if (vm.count("start"))
+    {
         config->START_UP = Config::FRESH;
+    }
+
+    if (vm.count("startReporting"))
+    {
+        config->START_UP = Config::FRESH;
+        config->START_LEDGER = vm["startReporting"].as<std::string>();
+    }
+
+    if (vm.count("reportingReadOnly"))
+    {
+        config->setReportingReadOnly(true);
+    }
 
     if (vm.count("import"))
         config->doImport = true;
 
     if (vm.count("nodetoshard"))
         config->nodeToShard = true;
-
-    if (vm.count("validateShards"))
-        config->validateShards = true;
 
     if (vm.count("ledger"))
     {
@@ -724,7 +762,7 @@ run(int argc, char** argv)
             return -1;
 
         // Start the server
-        app->doStart(true /*start timers*/);
+        app->start(true /*start timers*/);
 
         // Block until we get a stop RPC.
         app->run();
@@ -740,8 +778,6 @@ run(int argc, char** argv)
 
 }  // namespace ripple
 
-// Must be outside the namespace for obvious reasons
-//
 int
 main(int argc, char** argv)
 {
@@ -765,7 +801,5 @@ main(int argc, char** argv)
 
     atexit(&google::protobuf::ShutdownProtobufLibrary);
 
-    auto const result(ripple::run(argc, argv));
-
-    return result;
+    return ripple::run(argc, argv);
 }

@@ -22,13 +22,12 @@
 
 #include <ripple/basics/KeyCache.h>
 #include <ripple/basics/TaggedCache.h>
-#include <ripple/core/Stoppable.h>
 #include <ripple/nodestore/Backend.h>
 #include <ripple/nodestore/NodeObject.h>
 #include <ripple/nodestore/Scheduler.h>
-#include <ripple/nodestore/impl/Tuning.h>
 #include <ripple/protocol/SystemParameters.h>
 
+#include <condition_variable>
 #include <thread>
 
 namespace ripple {
@@ -50,23 +49,19 @@ namespace NodeStore {
 
     @see NodeObject
 */
-class Database : public Stoppable
+class Database
 {
 public:
     Database() = delete;
 
     /** Construct the node store.
 
-        @param name The Stoppable name for this Database.
-        @param parent The parent Stoppable.
         @param scheduler The scheduler to use for performing asynchronous tasks.
         @param readThreads The number of asynchronous read threads to create.
         @param config The configuration settings
         @param journal Destination for logging output.
     */
     Database(
-        std::string name,
-        Stoppable& parent,
         Scheduler& scheduler,
         int readThreads,
         Section const& config,
@@ -87,7 +82,7 @@ public:
 
     /** Import objects from another database. */
     virtual void
-    import(Database& source) = 0;
+    importDatabase(Database& source) = 0;
 
     /** Retrieve the estimated number of pending write operations.
         This is used for diagnostics.
@@ -103,7 +98,7 @@ public:
         @param data The payload of the object. The caller's
                     variable is overwritten.
         @param hash The 256-bit hash of the payload data.
-        @param seq The sequence of the ledger the object belongs to.
+        @param ledgerSeq The sequence of the ledger the object belongs to.
 
         @return `true` if the object was stored?
     */
@@ -112,82 +107,78 @@ public:
         NodeObjectType type,
         Blob&& data,
         uint256 const& hash,
-        std::uint32_t seq) = 0;
+        std::uint32_t ledgerSeq) = 0;
 
-    /** Fetch an object.
+    /* Check if two ledgers are in the same database
+
+        If these two sequence numbers map to the same database,
+        the result of a fetch with either sequence number would
+        be identical.
+
+        @param s1 The first sequence number
+        @param s2 The second sequence number
+
+        @return 'true' if both ledgers would be in the same DB
+
+    */
+    virtual bool
+    isSameDB(std::uint32_t s1, std::uint32_t s2) = 0;
+
+    virtual void
+    sync() = 0;
+
+    /** Fetch a node object.
         If the object is known to be not in the database, isn't found in the
         database during the fetch, or failed to load correctly during the fetch,
         `nullptr` is returned.
 
         @note This can be called concurrently.
         @param hash The key of the object to retrieve.
-        @param seq The sequence of the ledger where the object is stored.
+        @param ledgerSeq The sequence of the ledger where the object is stored.
+        @param fetchType the type of fetch, synchronous or asynchronous.
         @return The object, or nullptr if it couldn't be retrieved.
     */
-    virtual std::shared_ptr<NodeObject>
-    fetch(uint256 const& hash, std::uint32_t seq) = 0;
+    std::shared_ptr<NodeObject>
+    fetchNodeObject(
+        uint256 const& hash,
+        std::uint32_t ledgerSeq = 0,
+        FetchType fetchType = FetchType::synchronous);
 
     /** Fetch an object without waiting.
         If I/O is required to determine whether or not the object is present,
         `false` is returned. Otherwise, `true` is returned and `object` is set
         to refer to the object, or `nullptr` if the object is not present.
-        If I/O is required, the I/O is scheduled.
+        If I/O is required, the I/O is scheduled and `true` is returned
 
         @note This can be called concurrently.
         @param hash The key of the object to retrieve
-        @param seq The sequence of the ledger where the object is stored.
-        @param object The object retrieved
-        @return Whether the operation completed
+        @param ledgerSeq The sequence of the ledger where the
+                object is stored, used by the shard store.
+        @param callback Callback function when read completes
     */
-    virtual bool
+    void
     asyncFetch(
         uint256 const& hash,
-        std::uint32_t seq,
-        std::shared_ptr<NodeObject>& object) = 0;
+        std::uint32_t ledgerSeq,
+        std::function<void(std::shared_ptr<NodeObject> const&)>&& callback);
 
-    /** Copies a ledger stored in a different database to this one.
+    /** Store a ledger from a different database.
 
-        @param ledger The ledger to copy.
+        @param srcLedger The ledger to store.
         @return true if the operation was successful
     */
     virtual bool
     storeLedger(std::shared_ptr<Ledger const> const& srcLedger) = 0;
-
-    /** Wait for all currently pending async reads to complete.
-     */
-    void
-    waitReads();
-
-    /** Get the maximum number of async reads the node store prefers.
-
-        @param seq A ledger sequence specifying a shard to query.
-        @return The number of async reads preferred.
-        @note The sequence is only used with the shard store.
-    */
-    virtual int
-    getDesiredAsyncReadCount(std::uint32_t seq) = 0;
-
-    /** Get the positive cache hits to total attempts ratio. */
-    virtual float
-    getCacheHitRate() = 0;
-
-    /** Set the maximum number of entries and maximum cache age for both caches.
-
-        @param size Number of cache entries (0 = ignore)
-        @param age Maximum cache age in seconds
-    */
-    virtual void
-    tune(int size, std::chrono::seconds age) = 0;
 
     /** Remove expired entries from the positive and negative caches. */
     virtual void
     sweep() = 0;
 
     /** Gather statistics pertaining to read and write activities.
-
-        @return The total read and written bytes.
+     *
+     * @param obj Json object reference into which to place counters.
      */
-    std::uint32_t
+    std::uint64_t
     getStoreCount() const
     {
         return storeCount_;
@@ -205,7 +196,7 @@ public:
         return fetchHitCount_;
     }
 
-    std::uint32_t
+    std::uint64_t
     getStoreSize() const
     {
         return storeSz_;
@@ -217,6 +208,9 @@ public:
         return fetchSz_;
     }
 
+    void
+    getCountsJson(Json::Value& obj);
+
     /** Returns the number of file descriptors the database expects to need */
     int
     fdRequired() const
@@ -224,103 +218,165 @@ public:
         return fdRequired_;
     }
 
-    void
-    onStop() override;
+    virtual void
+    stop();
 
-    void
-    onChildrenStopped() override;
+    bool
+    isStopping() const;
+
+    /** @return The maximum number of ledgers stored in a shard
+     */
+    [[nodiscard]] std::uint32_t
+    ledgersPerShard() const noexcept
+    {
+        return ledgersPerShard_;
+    }
 
     /** @return The earliest ledger sequence allowed
      */
-    std::uint32_t
-    earliestLedgerSeq() const
+    [[nodiscard]] std::uint32_t
+    earliestLedgerSeq() const noexcept
     {
         return earliestLedgerSeq_;
     }
+
+    /** @return The earliest shard index
+     */
+    [[nodiscard]] std::uint32_t
+    earliestShardIndex() const noexcept
+    {
+        return earliestShardIndex_;
+    }
+
+    /** Calculates the first ledger sequence for a given shard index
+
+        @param shardIndex The shard index considered
+        @return The first ledger sequence pertaining to the shard index
+    */
+    [[nodiscard]] std::uint32_t
+    firstLedgerSeq(std::uint32_t shardIndex) const noexcept
+    {
+        assert(shardIndex >= earliestShardIndex_);
+        if (shardIndex <= earliestShardIndex_)
+            return earliestLedgerSeq_;
+        return 1 + (shardIndex * ledgersPerShard_);
+    }
+
+    /** Calculates the last ledger sequence for a given shard index
+
+        @param shardIndex The shard index considered
+        @return The last ledger sequence pertaining to the shard index
+    */
+    [[nodiscard]] std::uint32_t
+    lastLedgerSeq(std::uint32_t shardIndex) const noexcept
+    {
+        assert(shardIndex >= earliestShardIndex_);
+        return (shardIndex + 1) * ledgersPerShard_;
+    }
+
+    /** Calculates the shard index for a given ledger sequence
+
+        @param ledgerSeq ledger sequence
+        @return The shard index of the ledger sequence
+    */
+    [[nodiscard]] std::uint32_t
+    seqToShardIndex(std::uint32_t ledgerSeq) const noexcept
+    {
+        assert(ledgerSeq >= earliestLedgerSeq_);
+        return (ledgerSeq - 1) / ledgersPerShard_;
+    }
+
+    /** Calculates the maximum ledgers for a given shard index
+
+        @param shardIndex The shard index considered
+        @return The maximum ledgers pertaining to the shard index
+
+        @note The earliest shard may store less if the earliest ledger
+        sequence truncates its beginning
+    */
+    [[nodiscard]] std::uint32_t
+    maxLedgers(std::uint32_t shardIndex) const noexcept;
 
 protected:
     beast::Journal const j_;
     Scheduler& scheduler_;
     int fdRequired_{0};
 
-    void
-    stopThreads();
+    std::atomic<std::uint32_t> fetchHitCount_{0};
+    std::atomic<std::uint32_t> fetchSz_{0};
+
+    // The default is DEFAULT_LEDGERS_PER_SHARD (16384) to match the XRP ledger
+    // network. Can be set through the configuration file using the
+    // 'ledgers_per_shard' field under the 'node_db' and 'shard_db' stanzas.
+    // If specified, the value must be a multiple of 256 and equally assigned
+    // in both stanzas. Only unit tests or alternate networks should change
+    // this value.
+    std::uint32_t const ledgersPerShard_;
+
+    // The default is XRP_LEDGER_EARLIEST_SEQ (32570) to match the XRP ledger
+    // network's earliest allowed ledger sequence. Can be set through the
+    // configuration file using the 'earliest_seq' field under the 'node_db'
+    // and 'shard_db' stanzas. If specified, the value must be greater than zero
+    // and equally assigned in both stanzas. Only unit tests or alternate
+    // networks should change this value.
+    std::uint32_t const earliestLedgerSeq_;
+
+    // The earliest shard index
+    std::uint32_t const earliestShardIndex_;
 
     void
-    storeStats(size_t sz)
+    storeStats(std::uint64_t count, std::uint64_t sz)
     {
-        ++storeCount_;
+        assert(count <= sz);
+        storeCount_ += count;
         storeSz_ += sz;
     }
-
-    // Called by the public asyncFetch function
-    void
-    asyncFetch(
-        uint256 const& hash,
-        std::uint32_t seq,
-        std::shared_ptr<TaggedCache<uint256, NodeObject>> const& pCache,
-        std::shared_ptr<KeyCache<uint256>> const& nCache);
-
-    // Called by the public fetch function
-    std::shared_ptr<NodeObject>
-    fetchInternal(uint256 const& hash, std::shared_ptr<Backend> backend);
 
     // Called by the public import function
     void
     importInternal(Backend& dstBackend, Database& srcDB);
 
-    std::shared_ptr<NodeObject>
-    doFetch(
-        uint256 const& hash,
-        std::uint32_t seq,
-        TaggedCache<uint256, NodeObject>& pCache,
-        KeyCache<uint256>& nCache,
-        bool isAsync);
-
     // Called by the public storeLedger function
     bool
-    storeLedger(
-        Ledger const& srcLedger,
-        std::shared_ptr<Backend> dstBackend,
-        std::shared_ptr<TaggedCache<uint256, NodeObject>> dstPCache,
-        std::shared_ptr<KeyCache<uint256>> dstNCache,
-        std::shared_ptr<Ledger const> next);
+    storeLedger(Ledger const& srcLedger, std::shared_ptr<Backend> dstBackend);
+
+    void
+    updateFetchMetrics(uint64_t fetches, uint64_t hits, uint64_t duration)
+    {
+        fetchTotalCount_ += fetches;
+        fetchHitCount_ += hits;
+        fetchDurationUs_ += duration;
+    }
 
 private:
-    std::atomic<std::uint32_t> storeCount_{0};
-    std::atomic<std::uint32_t> fetchTotalCount_{0};
-    std::atomic<std::uint32_t> fetchHitCount_{0};
-    std::atomic<std::uint32_t> storeSz_{0};
-    std::atomic<std::uint32_t> fetchSz_{0};
+    std::atomic<std::uint64_t> storeCount_{0};
+    std::atomic<std::uint64_t> storeSz_{0};
+    std::atomic<std::uint64_t> fetchTotalCount_{0};
+    std::atomic<std::uint64_t> fetchDurationUs_{0};
+    std::atomic<std::uint64_t> storeDurationUs_{0};
 
-    std::mutex readLock_;
+    mutable std::mutex readLock_;
     std::condition_variable readCondVar_;
-    std::condition_variable readGenCondVar_;
 
     // reads to do
     std::map<
         uint256,
-        std::tuple<
+        std::vector<std::pair<
             std::uint32_t,
-            std::weak_ptr<TaggedCache<uint256, NodeObject>>,
-            std::weak_ptr<KeyCache<uint256>>>>
+            std::function<void(std::shared_ptr<NodeObject> const&)>>>>
         read_;
 
     // last read
     uint256 readLastHash_;
 
     std::vector<std::thread> readThreads_;
-    bool readShut_{false};
-
-    // current read generation
-    uint64_t readGen_{0};
-
-    // The default is 32570 to match the XRP ledger network's earliest
-    // allowed sequence. Alternate networks may set this value.
-    std::uint32_t const earliestLedgerSeq_;
+    bool readStopping_{false};
 
     virtual std::shared_ptr<NodeObject>
-    fetchFrom(uint256 const& hash, std::uint32_t seq) = 0;
+    fetchNodeObject(
+        uint256 const& hash,
+        std::uint32_t ledgerSeq,
+        FetchReport& fetchReport) = 0;
 
     /** Visit every object in the database
         This is usually called during import.
@@ -331,6 +387,17 @@ private:
     */
     virtual void
     for_each(std::function<void(std::shared_ptr<NodeObject>)> f) = 0;
+
+    /** Retrieve backend read and write stats.
+
+        @note The Counters struct is specific to and only used
+              by CassandraBackend.
+    */
+    virtual std::optional<Backend::Counters<std::uint64_t>>
+    getCounters() const
+    {
+        return std::nullopt;
+    }
 
     void
     threadEntry();

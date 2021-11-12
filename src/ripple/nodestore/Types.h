@@ -46,6 +46,7 @@ enum Status {
     notFound,
     dataCorrupt,
     unknown,
+    backendError,
 
     customCode = 100
 };
@@ -54,6 +55,16 @@ enum Status {
 using Batch = std::vector<std::shared_ptr<NodeObject>>;
 
 }  // namespace NodeStore
+
+/** Shard states. */
+enum class ShardState : std::uint32_t {
+    acquire,     // Acquiring ledgers
+    complete,    // Backend is ledger complete, database is unverified
+    finalizing,  // Verifying database
+    finalized,   // Database verified, shard is immutable
+    queued       // Queued to be finalized
+};
+
 }  // namespace ripple
 
 #endif

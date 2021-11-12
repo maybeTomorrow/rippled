@@ -68,7 +68,7 @@ medium
 
 # This is primary persistent datastore for rippled.  This includes transaction
 # metadata, account states, and ledger headers.  Helpful information can be
-# found here: https://ripple.com/wiki/NodeBackEnd
+# found on https://xrpl.org/capacity-planning.html#node-db-type
 # delete old ledgers while maintaining at least 2000. Do not require an
 # external administrative command to initiate deletion.
 [node_db]
@@ -810,11 +810,11 @@ trustthesevalidators.gov
         ParsedPort rpc;
         if (!unexcept([&]() { parse_Port(rpc, conf["port_rpc"], log); }))
             return;
-        BEAST_EXPECT(rpc.admin_ip && (rpc.admin_ip.get().size() == 2));
+        BEAST_EXPECT(rpc.admin_ip && (rpc.admin_ip.value().size() == 2));
         ParsedPort wss;
         if (!unexcept([&]() { parse_Port(wss, conf["port_wss_admin"], log); }))
             return;
-        BEAST_EXPECT(wss.admin_ip && (wss.admin_ip.get().size() == 1));
+        BEAST_EXPECT(wss.admin_ip && (wss.admin_ip.value().size() == 1));
     }
 
     void
@@ -991,7 +991,7 @@ r.ripple.com 51235
             BEAST_EXPECT(!get_if_exists(s, "a_string", val_10));
             BEAST_EXPECT(val_10 == 10);
 
-            BEAST_EXPECT(s.get<int>("not_a_key") == boost::none);
+            BEAST_EXPECT(s.get<int>("not_a_key") == std::nullopt);
             try
             {
                 s.get<int>("a_string");
@@ -1066,6 +1066,80 @@ r.ripple.com 51235
     }
 
     void
+    testOverlay()
+    {
+        testcase("overlay: unknown time");
+
+        auto testUnknown =
+            [](std::string value) -> std::optional<std::chrono::seconds> {
+            try
+            {
+                Config c;
+                c.loadFromString("[overlay]\nmax_unknown_time=" + value);
+                return c.MAX_UNKNOWN_TIME;
+            }
+            catch (std::runtime_error&)
+            {
+                return {};
+            }
+        };
+
+        // Failures
+        BEAST_EXPECT(!testUnknown("none"));
+        BEAST_EXPECT(!testUnknown("0.5"));
+        BEAST_EXPECT(!testUnknown("180 seconds"));
+        BEAST_EXPECT(!testUnknown("9 minutes"));
+
+        // Below lower bound
+        BEAST_EXPECT(!testUnknown("299"));
+
+        // In bounds
+        BEAST_EXPECT(testUnknown("300") == std::chrono::seconds{300});
+        BEAST_EXPECT(testUnknown("301") == std::chrono::seconds{301});
+        BEAST_EXPECT(testUnknown("1799") == std::chrono::seconds{1799});
+        BEAST_EXPECT(testUnknown("1800") == std::chrono::seconds{1800});
+
+        // Above upper bound
+        BEAST_EXPECT(!testUnknown("1801"));
+
+        testcase("overlay: diverged time");
+
+        // In bounds:
+        auto testDiverged =
+            [](std::string value) -> std::optional<std::chrono::seconds> {
+            try
+            {
+                Config c;
+                c.loadFromString("[overlay]\nmax_diverged_time=" + value);
+                return c.MAX_DIVERGED_TIME;
+            }
+            catch (std::runtime_error&)
+            {
+                return {};
+            }
+        };
+
+        // Failures
+        BEAST_EXPECT(!testDiverged("none"));
+        BEAST_EXPECT(!testDiverged("0.5"));
+        BEAST_EXPECT(!testDiverged("180 seconds"));
+        BEAST_EXPECT(!testDiverged("9 minutes"));
+
+        // Below lower bound
+        BEAST_EXPECT(!testDiverged("0"));
+        BEAST_EXPECT(!testDiverged("59"));
+
+        // In bounds
+        BEAST_EXPECT(testDiverged("60") == std::chrono::seconds{60});
+        BEAST_EXPECT(testDiverged("61") == std::chrono::seconds{61});
+        BEAST_EXPECT(testDiverged("899") == std::chrono::seconds{899});
+        BEAST_EXPECT(testDiverged("900") == std::chrono::seconds{900});
+
+        // Above upper bound
+        BEAST_EXPECT(!testDiverged("901"));
+    }
+
+    void
     run() override
     {
         testLegacy();
@@ -1079,6 +1153,7 @@ r.ripple.com 51235
         testComments();
         testGetters();
         testAmendment();
+        testOverlay();
     }
 };
 

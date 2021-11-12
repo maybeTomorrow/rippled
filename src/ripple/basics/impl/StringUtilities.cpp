@@ -26,29 +26,21 @@
 #include <boost/algorithm/string.hpp>
 #include <boost/regex.hpp>
 #include <algorithm>
-#include <cstdarg>
 
 namespace ripple {
 
-uint64_t
-uintFromHex(std::string const& strSrc)
+std::string
+sqlBlobLiteral(Blob const& blob)
 {
-    uint64_t uValue(0);
+    std::string j;
 
-    if (strSrc.size() > 16)
-        Throw<std::invalid_argument>("overlong 64-bit value");
+    j.reserve(blob.size() * 2 + 3);
+    j.push_back('X');
+    j.push_back('\'');
+    boost::algorithm::hex(blob.begin(), blob.end(), std::back_inserter(j));
+    j.push_back('\'');
 
-    for (auto c : strSrc)
-    {
-        int ret = charUnHex(c);
-
-        if (ret == -1)
-            Throw<std::invalid_argument>("invalid hex digit");
-
-        uValue = (uValue << 4) | ret;
-    }
-
-    return uValue;
+    return j;
 }
 
 bool
@@ -111,13 +103,40 @@ trim_whitespace(std::string str)
     return str;
 }
 
-boost::optional<std::uint64_t>
+std::optional<std::uint64_t>
 to_uint64(std::string const& s)
 {
     std::uint64_t result;
     if (beast::lexicalCastChecked(result, s))
         return result;
-    return boost::none;
+    return std::nullopt;
+}
+
+bool
+isProperlyFormedTomlDomain(std::string const& domain)
+{
+    // The domain must be between 4 and 128 characters long
+    if (domain.size() < 4 || domain.size() > 128)
+        return false;
+
+    // This regular expression should do a decent job of weeding out
+    // obviously wrong domain names but it isn't perfect. It does not
+    // really support IDNs. If this turns out to be an issue, a more
+    // thorough regex can be used or this check can just be removed.
+    static boost::regex const re(
+        "^"                   // Beginning of line
+        "("                   // Beginning of a segment
+        "(?!-)"               //  - must not begin with '-'
+        "[a-zA-Z0-9-]{1,63}"  //  - only alphanumeric and '-'
+        "(?<!-)"              //  - must not end with '-'
+        "\\."                 // segment separator
+        ")+"                  // 1 or more segments
+        "[A-Za-z]{2,63}"      // TLD
+        "$"                   // End of line
+        ,
+        boost::regex_constants::optimize);
+
+    return boost::regex_match(domain, re);
 }
 
 }  // namespace ripple

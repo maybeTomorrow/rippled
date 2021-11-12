@@ -42,7 +42,6 @@
 #include <boost/algorithm/string/predicate.hpp>
 #include <boost/asio/streambuf.hpp>
 #include <boost/beast/core/string.hpp>
-#include <boost/optional.hpp>
 #include <boost/regex.hpp>
 
 #include <array>
@@ -151,9 +150,11 @@ private:
     }
 
     static bool
-    validPublicKey(std::string const& strPk)
+    validPublicKey(
+        std::string const& strPk,
+        TokenType type = TokenType::AccountPublic)
     {
-        if (parseBase58<PublicKey>(TokenType::AccountPublic, strPk))
+        if (parseBase58<PublicKey>(type, strPk))
             return true;
 
         auto pkHex = strUnHex(strPk);
@@ -235,7 +236,7 @@ private:
             Json::Value jvRequest(Json::objectValue);
 
             std::string const strPk = jvParams[0u].asString();
-            if (!validPublicKey(strPk))
+            if (!validPublicKey(strPk, TokenType::NodePublic))
                 return rpcError(rpcPUBLIC_MALFORMED);
 
             jvRequest[jss::public_key] = strPk;
@@ -314,8 +315,8 @@ private:
 
             if (uLedgerMax != -1 && uLedgerMax < uLedgerMin)
             {
-                // The command line always follows ApiMaximumSupportedVersion
-                if (RPC::ApiMaximumSupportedVersion == 1)
+                // The command line always follows apiMaximumSupportedVersion
+                if (RPC::apiMaximumSupportedVersion == 1)
                     return rpcError(rpcLGR_IDXS_INVALID);
                 return rpcError(rpcNOT_SYNCED);
             }
@@ -387,8 +388,8 @@ private:
 
             if (uLedgerMax != -1 && uLedgerMax < uLedgerMin)
             {
-                // The command line always follows ApiMaximumSupportedVersion
-                if (RPC::ApiMaximumSupportedVersion == 1)
+                // The command line always follows apiMaximumSupportedVersion
+                if (RPC::apiMaximumSupportedVersion == 1)
                     return rpcError(rpcLGR_IDXS_INVALID);
                 return rpcError(rpcNOT_SYNCED);
             }
@@ -818,7 +819,7 @@ private:
         {
             // verify the channel id is a valid 256 bit number
             uint256 channelId;
-            if (!channelId.SetHexExact(jvParams[index].asString()))
+            if (!channelId.parseHex(jvParams[index].asString()))
                 return rpcError(rpcCHANNEL_MALFORMED);
             jvRequest[jss::channel_id] = to_string(channelId);
             index++;
@@ -850,7 +851,7 @@ private:
         {
             // verify the channel id is a valid 256 bit number
             uint256 channelId;
-            if (!channelId.SetHexExact(jvParams[1u].asString()))
+            if (!channelId.parseHex(jvParams[1u].asString()))
                 return rpcError(rpcCHANNEL_MALFORMED);
         }
         jvRequest[jss::channel_id] = jvParams[1u].asString();
@@ -931,6 +932,15 @@ private:
 
         if (iCursor == 2 && !jvParseLedger(jvRequest, jvParams[1u].asString()))
             return rpcError(rpcLGR_IDX_MALFORMED);
+
+        return jvRequest;
+    }
+
+    Json::Value
+    parseNodeToShard(Json::Value const& jvParams)
+    {
+        Json::Value jvRequest;
+        jvRequest[jss::action] = jvParams[0u].asString();
 
         return jvRequest;
     }
@@ -1256,6 +1266,7 @@ public:
             {"log_level", &RPCParser::parseLogLevel, 0, 2},
             {"logrotate", &RPCParser::parseAsIs, 0, 0},
             {"manifest", &RPCParser::parseManifest, 1, 1},
+            {"node_to_shard", &RPCParser::parseNodeToShard, 1, 1},
             {"owner_info", &RPCParser::parseAccountItems, 1, 3},
             {"peers", &RPCParser::parseAsIs, 0, 0},
             {"ping", &RPCParser::parseAsIs, 0, 0},
@@ -1400,7 +1411,8 @@ struct RPCCallImp
 
             // Parse reply
             JLOG(j.debug()) << "RPC reply: " << strData << std::endl;
-            if (strData.find("Unable to parse request") == 0)
+            if (strData.find("Unable to parse request") == 0 ||
+                strData.find(jss::invalid_API_version.c_str()) == 0)
                 Throw<RequestNotParseable>(strData);
             Json::Reader reader;
             Json::Value jvReply;
@@ -1471,7 +1483,7 @@ rpcCmdLineToJson(
         if (jr.isObject() && !jr.isMember(jss::error) &&
             !jr.isMember(jss::api_version))
         {
-            jr[jss::api_version] = RPC::ApiMaximumSupportedVersion;
+            jr[jss::api_version] = RPC::apiMaximumSupportedVersion;
         }
     };
 
@@ -1601,7 +1613,7 @@ rpcClient(
                         &jvOutput,
                         std::placeholders::_1),
                     headers);
-                isService.run();  // This blocks until there is no more
+                isService.run();  // This blocks until there are no more
                                   // outstanding async calls.
             }
             if (jvOutput.isMember("result"))

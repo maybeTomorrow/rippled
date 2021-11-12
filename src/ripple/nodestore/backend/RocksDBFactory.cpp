@@ -88,7 +88,6 @@ private:
 public:
     beast::Journal m_journal;
     size_t const m_keyBytes;
-    Scheduler& m_scheduler;
     BatchWriter m_batch;
     std::string m_name;
     std::unique_ptr<rocksdb::DB> m_db;
@@ -104,7 +103,6 @@ public:
         : m_deletePath(false)
         , m_journal(journal)
         , m_keyBytes(keyBytes)
-        , m_scheduler(scheduler)
         , m_batch(*this, scheduler)
     {
         if (!get_if_exists(keyValues, "path", m_name))
@@ -174,9 +172,7 @@ public:
         if (keyValues.exists("bbt_options"))
         {
             auto const s = rocksdb::GetBlockBasedTableOptionsFromString(
-                table_options,
-                get<std::string>(keyValues, "bbt_options"),
-                &table_options);
+                table_options, get(keyValues, "bbt_options"), &table_options);
             if (!s.ok())
                 Throw<std::runtime_error>(
                     std::string("Unable to set RocksDB bbt_options: ") +
@@ -188,7 +184,7 @@ public:
         if (keyValues.exists("options"))
         {
             auto const s = rocksdb::GetOptionsFromString(
-                m_options, get<std::string>(keyValues, "options"), &m_options);
+                m_options, get(keyValues, "options"), &m_options);
             if (!s.ok())
                 Throw<std::runtime_error>(
                     std::string("Unable to set RocksDB options: ") +
@@ -224,6 +220,12 @@ public:
                 std::string("Unable to open/create RocksDB: ") +
                 status.ToString());
         m_db.reset(db);
+    }
+
+    bool
+    isOpen() override
+    {
+        return static_cast<bool>(m_db);
     }
 
     void
@@ -299,17 +301,22 @@ public:
         return status;
     }
 
-    bool
-    canFetchBatch() override
+    std::pair<std::vector<std::shared_ptr<NodeObject>>, Status>
+    fetchBatch(std::vector<uint256 const*> const& hashes) override
     {
-        return false;
-    }
+        std::vector<std::shared_ptr<NodeObject>> results;
+        results.reserve(hashes.size());
+        for (auto const& h : hashes)
+        {
+            std::shared_ptr<NodeObject> nObj;
+            Status status = fetch(h->begin(), &nObj);
+            if (status != ok)
+                results.push_back({});
+            else
+                results.push_back(nObj);
+        }
 
-    std::vector<std::shared_ptr<NodeObject>>
-    fetchBatch(std::size_t n, void const* const* keys) override
-    {
-        Throw<std::runtime_error>("pure virtual called");
-        return {};
+        return {results, ok};
     }
 
     void
@@ -348,6 +355,11 @@ public:
     }
 
     void
+    sync() override
+    {
+    }
+
+    void
     for_each(std::function<void(std::shared_ptr<NodeObject>)> f) override
     {
         assert(m_db);
@@ -370,8 +382,7 @@ public:
                 {
                     // Uh oh, corrupted data!
                     JLOG(m_journal.fatal())
-                        << "Corrupt NodeObject #"
-                        << from_hex_text<uint256>(it->key().data());
+                        << "Corrupt NodeObject #" << it->key().ToString(true);
                 }
             }
             else
@@ -402,11 +413,6 @@ public:
     writeBatch(Batch const& batch) override
     {
         storeBatch(batch);
-    }
-
-    void
-    verify() override
-    {
     }
 
     /** Returns the number of file descriptors the backend expects to need */
@@ -444,6 +450,7 @@ public:
     createInstance(
         size_t keyBytes,
         Section const& keyValues,
+        std::size_t,
         Scheduler& scheduler,
         beast::Journal journal) override
     {

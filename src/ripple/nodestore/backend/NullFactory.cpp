@@ -43,6 +43,12 @@ public:
     {
     }
 
+    bool
+    isOpen() override
+    {
+        return false;
+    }
+
     void
     close() override
     {
@@ -54,16 +60,9 @@ public:
         return notFound;
     }
 
-    bool
-    canFetchBatch() override
+    std::pair<std::vector<std::shared_ptr<NodeObject>>, Status>
+    fetchBatch(std::vector<uint256 const*> const& hashes) override
     {
-        return false;
-    }
-
-    std::vector<std::shared_ptr<NodeObject>>
-    fetchBatch(std::size_t n, void const* const* keys) override
-    {
-        Throw<std::runtime_error>("pure virtual called");
         return {};
     }
 
@@ -74,6 +73,11 @@ public:
 
     void
     storeBatch(Batch const& batch) override
+    {
+    }
+
+    void
+    sync() override
     {
     }
 
@@ -90,11 +94,6 @@ public:
 
     void
     setDeletePath() override
-    {
-    }
-
-    void
-    verify() override
     {
     }
 
@@ -130,7 +129,12 @@ public:
     }
 
     std::unique_ptr<Backend>
-    createInstance(size_t, Section const&, Scheduler&, beast::Journal) override
+    createInstance(
+        size_t,
+        Section const&,
+        std::size_t,
+        Scheduler&,
+        beast::Journal) override
     {
         return std::make_unique<NullBackend>();
     }

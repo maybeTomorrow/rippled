@@ -39,16 +39,17 @@ TrafficCount::categorize(
     if (type == protocol::mtENDPOINTS)
         return TrafficCount::category::overlay;
 
-    if ((type == protocol::mtGET_SHARD_INFO) ||
-        (type == protocol::mtSHARD_INFO) ||
-        (type == protocol::mtGET_PEER_SHARD_INFO) ||
-        (type == protocol::mtPEER_SHARD_INFO))
+    if ((type == protocol::mtGET_PEER_SHARD_INFO) ||
+        (type == protocol::mtPEER_SHARD_INFO) ||
+        (type == protocol::mtGET_PEER_SHARD_INFO_V2) ||
+        (type == protocol::mtPEER_SHARD_INFO_V2))
         return TrafficCount::category::shards;
 
     if (type == protocol::mtTRANSACTION)
         return TrafficCount::category::transaction;
 
-    if (type == protocol::mtVALIDATORLIST)
+    if (type == protocol::mtVALIDATORLIST ||
+        type == protocol::mtVALIDATORLISTCOLLECTION)
         return TrafficCount::category::validatorlist;
 
     if (type == protocol::mtVALIDATION)
@@ -137,9 +138,30 @@ TrafficCount::categorize(
                 ? TrafficCount::category::share_fetch_pack
                 : TrafficCount::category::get_fetch_pack;
 
+        if (msg->type() == protocol::TMGetObjectByHash::otTRANSACTIONS)
+            return TrafficCount::category::get_transactions;
+
         return (msg->query() == inbound) ? TrafficCount::category::share_hash
                                          : TrafficCount::category::get_hash;
     }
+
+    if (type == protocol::mtPROOF_PATH_REQ)
+        return TrafficCount::category::proof_path_request;
+
+    if (type == protocol::mtPROOF_PATH_RESPONSE)
+        return TrafficCount::category::proof_path_response;
+
+    if (type == protocol::mtREPLAY_DELTA_REQ)
+        return TrafficCount::category::replay_delta_request;
+
+    if (type == protocol::mtREPLAY_DELTA_RESPONSE)
+        return TrafficCount::category::replay_delta_response;
+
+    if (type == protocol::mtHAVE_TRANSACTIONS)
+        return TrafficCount::category::have_transactions;
+
+    if (type == protocol::mtTRANSACTIONS)
+        return TrafficCount::category::requested_transactions;
 
     return TrafficCount::category::unknown;
 }

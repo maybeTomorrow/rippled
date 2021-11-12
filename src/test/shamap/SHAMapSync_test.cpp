@@ -41,8 +41,7 @@ public:
 
         for (int d = 0; d < 3; ++d)
             s.add32(rand_int<std::uint32_t>(eng_));
-
-        return std::make_shared<SHAMapItem>(s.getSHA512Half(), s.peekData());
+        return std::make_shared<SHAMapItem>(s.getSHA512Half(), s.slice());
     }
 
     bool
@@ -59,7 +58,7 @@ public:
             std::shared_ptr<SHAMapItem> item = makeRandomAS();
             items.push_back(item->key());
 
-            if (!map.addItem(std::move(*item), false, false))
+            if (!map.addItem(SHAMapNodeType::tnACCOUNT_STATE, std::move(*item)))
             {
                 log << "Unable to add item to map\n";
                 return false;
@@ -98,7 +97,8 @@ public:
         int items = 10000;
         for (int i = 0; i < items; ++i)
         {
-            source.addItem(std::move(*makeRandomAS()), false, false);
+            source.addItem(
+                SHAMapNodeType::tnACCOUNT_STATE, std::move(*makeRandomAS()));
             if (i % 100 == 0)
                 source.invariants();
         }

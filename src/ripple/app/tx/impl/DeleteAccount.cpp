@@ -100,7 +100,19 @@ removeSignersFromLedger(
     std::shared_ptr<SLE> const& sleDel,
     beast::Journal j)
 {
-    return SetSignerList::removeFromLedger(app, view, account);
+    return SetSignerList::removeFromLedger(app, view, account, j);
+}
+
+TER
+removeTicketFromLedger(
+    Application&,
+    ApplyView& view,
+    AccountID const& account,
+    uint256 const& delIndex,
+    std::shared_ptr<SLE> const&,
+    beast::Journal j)
+{
+    return Transactor::ticketDelete(view, account, delIndex, j);
 }
 
 TER
@@ -115,9 +127,9 @@ removeDepositPreauthFromLedger(
     return DepositPreauth::removeFromLedger(app, view, delIndex, j);
 }
 
-// Return nullptr if the LedgerEntryType represents an obligation that can't be
-// deleted Otherwise return the pointer to the function that can delete the
-// non-obligation
+// Return nullptr if the LedgerEntryType represents an obligation that can't
+// be deleted.  Otherwise return the pointer to the function that can delete
+// the non-obligation
 DeleterFuncPtr
 nonObligationDeleter(LedgerEntryType t)
 {
@@ -127,7 +139,8 @@ nonObligationDeleter(LedgerEntryType t)
             return offerDelete;
         case ltSIGNER_LIST:
             return removeSignersFromLedger;
-        // case ltTICKET: return ???;
+        case ltTICKET:
+            return removeTicketFromLedger;
         case ltDEPOSIT_PREAUTH:
             return removeDepositPreauthFromLedger;
         default:
@@ -185,13 +198,9 @@ DeleteAccount::preclaim(PreclaimContext const& ctx)
     uint256 dirEntry{beast::zero};
 
     if (!cdirFirst(
-            ctx.view,
-            ownerDirKeylet.key,
-            sleDirNode,
-            uDirEntry,
-            dirEntry,
-            ctx.j))
-        // Account has no directory at all.  Looks good.
+            ctx.view, ownerDirKeylet.key, sleDirNode, uDirEntry, dirEntry))
+        // Account has no directory at all.  This _should_ have been caught
+        // by the dirIsEmpty() check earlier, but it's okay to catch it here.
         return tesSUCCESS;
 
     std::int32_t deletableDirEntryCount{0};
@@ -199,8 +208,7 @@ DeleteAccount::preclaim(PreclaimContext const& ctx)
     {
         // Make sure any directory node types that we find are the kind
         // we can delete.
-        Keylet const itemKeylet{ltCHILD, dirEntry};
-        auto sleItem = ctx.view.read(itemKeylet);
+        auto sleItem = ctx.view.read(keylet::child(dirEntry));
         if (!sleItem)
         {
             // Directory node has an invalid index.  Bail out.
@@ -223,7 +231,7 @@ DeleteAccount::preclaim(PreclaimContext const& ctx)
             return tefTOO_BIG;
 
     } while (cdirNext(
-        ctx.view, ownerDirKeylet.key, sleDirNode, uDirEntry, dirEntry, ctx.j));
+        ctx.view, ownerDirKeylet.key, sleDirNode, uDirEntry, dirEntry));
 
     return tesSUCCESS;
 }
@@ -247,14 +255,12 @@ DeleteAccount::doApply()
     uint256 dirEntry{beast::zero};
 
     if (view().exists(ownerDirKeylet) &&
-        dirFirst(
-            view(), ownerDirKeylet.key, sleDirNode, uDirEntry, dirEntry, j_))
+        dirFirst(view(), ownerDirKeylet.key, sleDirNode, uDirEntry, dirEntry))
     {
         do
         {
             // Choose the right way to delete each directory node.
-            Keylet const itemKeylet{ltCHILD, dirEntry};
-            auto sleItem = view().peek(itemKeylet);
+            auto sleItem = view().peek(keylet::child(dirEntry));
             if (!sleItem)
             {
                 // Directory node has an invalid index.  Bail out.
@@ -310,7 +316,7 @@ DeleteAccount::doApply()
             uDirEntry = 0;
 
         } while (dirNext(
-            view(), ownerDirKeylet.key, sleDirNode, uDirEntry, dirEntry, j_));
+            view(), ownerDirKeylet.key, sleDirNode, uDirEntry, dirEntry));
     }
 
     // Transfer any XRP remaining after the fee is paid to the destination:

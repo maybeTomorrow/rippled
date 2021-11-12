@@ -20,10 +20,10 @@
 #ifndef RIPPLE_LEDGER_READVIEWFWDRANGE_H_INCLUDED
 #define RIPPLE_LEDGER_READVIEWFWDRANGE_H_INCLUDED
 
-#include <boost/optional.hpp>
 #include <cstddef>
 #include <iterator>
 #include <memory>
+#include <optional>
 
 namespace ripple {
 
@@ -126,7 +126,7 @@ public:
     private:
         ReadView const* view_ = nullptr;
         std::unique_ptr<iter_base> impl_;
-        boost::optional<value_type> mutable cache_;
+        std::optional<value_type> mutable cache_;
     };
 
     static_assert(std::is_nothrow_move_constructible<iterator>{}, "");
@@ -141,17 +141,12 @@ public:
     ReadViewFwdRange&
     operator=(ReadViewFwdRange const&) = default;
 
-    // VFALCO Otherwise causes errors on clang
-    // private:
-    //    friend class ReadView;
-
     explicit ReadViewFwdRange(ReadView const& view) : view_(&view)
     {
     }
 
 protected:
     ReadView const* view_;
-    boost::optional<iterator> mutable end_;
 };
 
 }  // namespace detail

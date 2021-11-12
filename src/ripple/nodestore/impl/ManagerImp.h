@@ -23,6 +23,7 @@
 #include <ripple/nodestore/Manager.h>
 
 namespace ripple {
+
 namespace NodeStore {
 
 class ManagerImp : public Manager
@@ -54,15 +55,15 @@ public:
     std::unique_ptr<Backend>
     make_Backend(
         Section const& parameters,
+        std::size_t burstSize,
         Scheduler& scheduler,
         beast::Journal journal) override;
 
     std::unique_ptr<Database>
     make_Database(
-        std::string const& name,
+        std::size_t burstSize,
         Scheduler& scheduler,
         int readThreads,
-        Stoppable& parent,
         Section const& config,
         beast::Journal journal) override;
 };

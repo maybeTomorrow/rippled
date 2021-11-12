@@ -86,16 +86,30 @@ DatabaseCon::~DatabaseCon()
     if (checkpointer_)
     {
         checkpointers.erase(checkpointer_->id());
+
+        std::weak_ptr<Checkpointer> wk(checkpointer_);
+        checkpointer_.reset();
+
+        // The references to our Checkpointer held by 'checkpointer_' and
+        // 'checkpointers' have been removed, so if the use count is nonzero, a
+        // checkpoint is currently in progress. Wait for it to end, otherwise
+        // creating a new DatabaseCon to the same database may fail due to the
+        // database being locked by our (now old) Checkpointer.
+        while (wk.use_count())
+        {
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        }
     }
 }
 
 DatabaseCon::Setup
-setup_DatabaseCon(Config const& c, boost::optional<beast::Journal> j)
+setup_DatabaseCon(Config const& c, std::optional<beast::Journal> j)
 {
     DatabaseCon::Setup setup;
 
     setup.startUp = c.START_UP;
     setup.standAlone = c.standalone();
+    setup.reporting = c.reporting();
     setup.dataDir = c.legacy("database_path");
     if (!setup.standAlone && setup.dataDir.empty())
     {

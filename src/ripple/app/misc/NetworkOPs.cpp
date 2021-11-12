@@ -37,28 +37,34 @@
 #include <ripple/app/misc/ValidatorKeys.h>
 #include <ripple/app/misc/ValidatorList.h>
 #include <ripple/app/misc/impl/AccountTxPaging.h>
+#include <ripple/app/rdb/RelationalDBInterface.h>
+#include <ripple/app/rdb/backend/RelationalDBInterfacePostgres.h>
+#include <ripple/app/rdb/backend/RelationalDBInterfaceSqlite.h>
+#include <ripple/app/reporting/ReportingETL.h>
 #include <ripple/app/tx/apply.h>
 #include <ripple/basics/PerfLog.h>
 #include <ripple/basics/UptimeClock.h>
-#include <ripple/basics/base64.h>
 #include <ripple/basics/mulDiv.h>
 #include <ripple/basics/safe_cast.h>
-#include <ripple/beast/core/LexicalCast.h>
 #include <ripple/beast/rfc2616.h>
 #include <ripple/beast/utility/rngfill.h>
 #include <ripple/consensus/Consensus.h>
 #include <ripple/consensus/ConsensusParms.h>
-#include <ripple/core/ConfigSections.h>
 #include <ripple/crypto/RFC1751.h>
 #include <ripple/crypto/csprng.h>
 #include <ripple/json/to_string.h>
+#include <ripple/net/RPCErr.h>
+#include <ripple/nodestore/DatabaseShard.h>
 #include <ripple/overlay/Cluster.h>
 #include <ripple/overlay/Overlay.h>
 #include <ripple/overlay/predicates.h>
 #include <ripple/protocol/BuildInfo.h>
 #include <ripple/protocol/Feature.h>
+#include <ripple/protocol/STParsedJSON.h>
+#include <ripple/resource/Fees.h>
 #include <ripple/resource/ResourceManager.h>
 #include <ripple/rpc/DeliveredAmount.h>
+#include <ripple/rpc/impl/RPCHelpers.h>
 #include <boost/asio/ip/host_name.hpp>
 #include <boost/asio/steady_timer.hpp>
 
@@ -137,8 +143,6 @@ class NetworkOPsImp final : public NetworkOPs
         std::chrono::system_clock::time_point start_ =
             std::chrono::system_clock::now();
         static std::array<Json::StaticString const, 5> const states_;
-        static Json::StaticString const transitions_;
-        static Json::StaticString const dur_;
 
     public:
         explicit StateAccounting()
@@ -207,7 +211,7 @@ class NetworkOPsImp final : public NetworkOPs
         std::uint32_t loadFactorServer = 256;
         std::uint32_t loadBaseServer = 256;
         XRPAmount baseFee{10};
-        boost::optional<TxQ::Metrics> em = boost::none;
+        std::optional<TxQ::Metrics> em = std::nullopt;
     };
 
 public:
@@ -219,19 +223,17 @@ public:
         bool start_valid,
         JobQueue& job_queue,
         LedgerMaster& ledgerMaster,
-        Stoppable& parent,
         ValidatorKeys const& validatorKeys,
         boost::asio::io_service& io_svc,
         beast::Journal journal,
         beast::insight::Collector::ptr const& collector)
-        : NetworkOPs(parent)
-        , app_(app)
-        , m_clock(clock)
+        : app_(app)
         , m_journal(journal)
         , m_localTX(make_LocalTxs())
         , mMode(start_valid ? OperatingMode::FULL : OperatingMode::DISCONNECTED)
         , heartbeatTimer_(io_svc)
         , clusterTimer_(io_svc)
+        , accountHistoryTxTimer_(io_svc)
         , mConsensus(
               app,
               make_FeeVote(
@@ -261,19 +263,13 @@ public:
 
 public:
     OperatingMode
-    getOperatingMode() const override
-    {
-        return mMode;
-    }
+    getOperatingMode() const override;
 
     std::string
     strOperatingMode(OperatingMode const mode, bool const admin) const override;
 
     std::string
-    strOperatingMode(bool const admin = false) const override
-    {
-        return strOperatingMode(mMode, admin);
-    }
+    strOperatingMode(bool const admin = false) const override;
 
     //
     // Transaction operations.
@@ -365,14 +361,6 @@ public:
         std::shared_ptr<STValidation> const& val,
         std::string const& source) override;
 
-    std::shared_ptr<SHAMap>
-    getTXMap(uint256 const& hash);
-    bool
-    hasTXSet(
-        const std::shared_ptr<Peer>& peer,
-        uint256 const& set,
-        protocol::TxSetStatus status);
-
     void
     mapComplete(std::shared_ptr<SHAMap> const& map, bool fromAcquire) override;
 
@@ -391,10 +379,7 @@ public:
     void
     endConsensus() override;
     void
-    setStandAlone() override
-    {
-        setMode(OperatingMode::FULL);
-    }
+    setStandAlone() override;
 
     /** Called to initially start our timers.
         Not called for stand-alone mode.
@@ -403,51 +388,35 @@ public:
     setStateTimer() override;
 
     void
-    setNeedNetworkLedger() override
-    {
-        needNetworkLedger_ = true;
-    }
+    setNeedNetworkLedger() override;
     void
-    clearNeedNetworkLedger() override
-    {
-        needNetworkLedger_ = false;
-    }
+    clearNeedNetworkLedger() override;
     bool
-    isNeedNetworkLedger() override
-    {
-        return needNetworkLedger_;
-    }
+    isNeedNetworkLedger() override;
     bool
-    isFull() override
-    {
-        return !needNetworkLedger_ && (mMode == OperatingMode::FULL);
-    }
+    isFull() override;
 
     void
     setMode(OperatingMode om) override;
 
     bool
-    isAmendmentBlocked() override
-    {
-        return amendmentBlocked_;
-    }
+    isBlocked() override;
+    bool
+    isAmendmentBlocked() override;
     void
     setAmendmentBlocked() override;
     bool
-    isAmendmentWarned() override
-    {
-        return !amendmentBlocked_ && amendmentWarned_;
-    }
+    isAmendmentWarned() override;
     void
-    setAmendmentWarned() override
-    {
-        amendmentWarned_ = true;
-    }
+    setAmendmentWarned() override;
     void
-    clearAmendmentWarned() override
-    {
-        amendmentWarned_ = false;
-    }
+    clearAmendmentWarned() override;
+    bool
+    isUNLBlocked() override;
+    void
+    setUNLBlocked() override;
+    void
+    clearUNLBlocked() override;
     void
     consensusViewChange() override;
 
@@ -461,84 +430,16 @@ public:
     getLedgerFetchInfo() override;
     std::uint32_t
     acceptLedger(
-        boost::optional<std::chrono::milliseconds> consensusDelay) override;
-    uint256
-    getConsensusLCL() override;
+        std::optional<std::chrono::milliseconds> consensusDelay) override;
     void
     reportFeeChange() override;
     void
     reportConsensusStateChange(ConsensusPhase phase);
 
     void
-    updateLocalTx(ReadView const& view) override
-    {
-        m_localTX->sweep(view);
-    }
+    updateLocalTx(ReadView const& view) override;
     std::size_t
-    getLocalTxCount() override
-    {
-        return m_localTX->size();
-    }
-
-    // Helper function to generate SQL query to get transactions.
-    std::string
-    transactionsSQL(
-        std::string selection,
-        AccountID const& account,
-        std::int32_t minLedger,
-        std::int32_t maxLedger,
-        bool descending,
-        std::uint32_t offset,
-        int limit,
-        bool binary,
-        bool count,
-        bool bUnlimited);
-
-    // Client information retrieval functions.
-    using NetworkOPs::AccountTxMarker;
-    using NetworkOPs::AccountTxs;
-    AccountTxs
-    getAccountTxs(
-        AccountID const& account,
-        std::int32_t minLedger,
-        std::int32_t maxLedger,
-        bool descending,
-        std::uint32_t offset,
-        int limit,
-        bool bUnlimited) override;
-
-    AccountTxs
-    getTxsAccount(
-        AccountID const& account,
-        std::int32_t minLedger,
-        std::int32_t maxLedger,
-        bool forward,
-        std::optional<AccountTxMarker>& marker,
-        int limit,
-        bool bUnlimited) override;
-
-    using NetworkOPs::MetaTxsList;
-    using NetworkOPs::txnMetaLedgerType;
-
-    MetaTxsList
-    getAccountTxsB(
-        AccountID const& account,
-        std::int32_t minLedger,
-        std::int32_t maxLedger,
-        bool descending,
-        std::uint32_t offset,
-        int limit,
-        bool bUnlimited) override;
-
-    MetaTxsList
-    getTxsAccountB(
-        AccountID const& account,
-        std::int32_t minLedger,
-        std::int32_t maxLedger,
-        bool forward,
-        std::optional<AccountTxMarker>& marker,
-        int limit,
-        bool bUnlimited) override;
+    getLocalTxCount() override;
 
     //
     // Monitoring: publisher side.
@@ -552,6 +453,15 @@ public:
         TER terResult) override;
     void
     pubValidation(std::shared_ptr<STValidation> const& val) override;
+
+    void
+    forwardValidation(Json::Value const& jvObj) override;
+    void
+    forwardManifest(Json::Value const& jvObj) override;
+    void
+    forwardProposedTransaction(Json::Value const& jvObj) override;
+    void
+    forwardProposedAccountTransaction(Json::Value const& jvObj) override;
 
     //--------------------------------------------------------------------------
     //
@@ -575,6 +485,21 @@ public:
         std::uint64_t seq,
         hash_set<AccountID> const& vnaAccountIDs,
         bool rt) override;
+
+    error_code_i
+    subAccountHistory(InfoSub::ref ispListener, AccountID const& account)
+        override;
+    void
+    unsubAccountHistory(
+        InfoSub::ref ispListener,
+        AccountID const& account,
+        bool historyOnly) override;
+
+    void
+    unsubAccountHistoryInternal(
+        std::uint64_t seq,
+        AccountID const& account,
+        bool historyOnly) override;
 
     bool
     subLedger(InfoSub::ref ispListener, Json::Value& jvResult) override;
@@ -633,14 +558,9 @@ public:
     bool
     tryRemoveRpcSub(std::string const& strUrl) override;
 
-    //--------------------------------------------------------------------------
-    //
-    // Stoppable.
-
     void
-    onStop() override
+    stop() override
     {
-        mAcquiringLedger.reset();
         {
             boost::system::error_code ec;
             heartbeatTimer_.cancel(ec);
@@ -659,15 +579,28 @@ public:
                     << "NetworkOPs: clusterTimer cancel error: "
                     << ec.message();
             }
+
+            ec.clear();
+            accountHistoryTxTimer_.cancel(ec);
+            if (ec)
+            {
+                JLOG(m_journal.error())
+                    << "NetworkOPs: accountHistoryTxTimer cancel error: "
+                    << ec.message();
+            }
         }
-        // Make sure that any waitHandlers pending in our timers are done
-        // before we declare ourselves stopped.
+        // Make sure that any waitHandlers pending in our timers are done.
         using namespace std::chrono_literals;
         waitHandlerCounter_.join("NetworkOPs", 1s, m_journal);
-        stopped();
     }
 
 private:
+    void
+    setTimer(
+        boost::asio::steady_timer& timer,
+        std::chrono::milliseconds const& expiry_time,
+        std::function<void()> onExpire,
+        std::function<void()> onError);
     void
     setHeartbeatTimer();
     void
@@ -707,8 +640,64 @@ private:
     using SubInfoMapType = hash_map<AccountID, SubMapType>;
     using subRpcMapType = hash_map<std::string, InfoSub::pointer>;
 
+    /*
+     * With a validated ledger to separate history and future, the node
+     * streams historical txns with negative indexes starting from -1,
+     * and streams future txns starting from index 0.
+     * The SubAccountHistoryIndex struct maintains these indexes.
+     * It also has a flag stopHistorical_ for stopping streaming
+     * the historical txns.
+     */
+    struct SubAccountHistoryIndex
+    {
+        AccountID const accountId_;
+        // forward
+        std::uint32_t forwardTxIndex_;
+        // separate backward and forward
+        std::uint32_t separationLedgerSeq_;
+        // history, backward
+        std::uint32_t historyLastLedgerSeq_;
+        std::int32_t historyTxIndex_;
+        bool haveHistorical_;
+        std::atomic<bool> stopHistorical_;
+
+        SubAccountHistoryIndex(AccountID const& accountId)
+            : accountId_(accountId)
+            , forwardTxIndex_(0)
+            , separationLedgerSeq_(0)
+            , historyLastLedgerSeq_(0)
+            , historyTxIndex_(-1)
+            , haveHistorical_(false)
+            , stopHistorical_(false)
+        {
+        }
+    };
+    struct SubAccountHistoryInfo
+    {
+        InfoSub::pointer sink_;
+        std::shared_ptr<SubAccountHistoryIndex> index_;
+    };
+    struct SubAccountHistoryInfoWeak
+    {
+        InfoSub::wptr sinkWptr_;
+        std::shared_ptr<SubAccountHistoryIndex> index_;
+    };
+    using SubAccountHistoryMapType =
+        hash_map<AccountID, hash_map<std::uint64_t, SubAccountHistoryInfoWeak>>;
+
+    /**
+     * @note called while holding mSubLock
+     */
+    void
+    subAccountHistoryStart(
+        std::shared_ptr<ReadView const> const& ledger,
+        SubAccountHistoryInfoWeak& subInfo);
+    void
+    addAccountHistoryJob(SubAccountHistoryInfoWeak subInfo);
+    void
+    setAccountHistoryJobTimer(SubAccountHistoryInfoWeak subInfo);
+
     Application& app_;
-    clock_type& m_clock;
     beast::Journal m_journal;
 
     std::unique_ptr<LocalTxs> m_localTX;
@@ -720,22 +709,25 @@ private:
     std::atomic<bool> needNetworkLedger_{false};
     std::atomic<bool> amendmentBlocked_{false};
     std::atomic<bool> amendmentWarned_{false};
+    std::atomic<bool> unlBlocked_{false};
 
     ClosureCounter<void, boost::system::error_code const&> waitHandlerCounter_;
     boost::asio::steady_timer heartbeatTimer_;
     boost::asio::steady_timer clusterTimer_;
+    boost::asio::steady_timer accountHistoryTxTimer_;
 
     RCLConsensus mConsensus;
 
     ConsensusPhase mLastConsensusPhase;
 
     LedgerMaster& m_ledgerMaster;
-    std::shared_ptr<InboundLedger> mAcquiringLedger;
 
     SubInfoMapType mSubAccount;
     SubInfoMapType mSubRTAccount;
 
     subRpcMapType mRpcSubMap;
+
+    SubAccountHistoryMapType mSubAccountHistory;
 
     enum SubTypes {
         sLedger,          // Accepted ledgers.
@@ -827,47 +819,7 @@ private:
 
 private:
     void
-    collect_metrics()
-    {
-        auto [counters, mode, start] = accounting_.getCounterData();
-        auto const current =
-            std::chrono::duration_cast<std::chrono::microseconds>(
-                std::chrono::system_clock::now() - start);
-        counters[static_cast<std::size_t>(mode)].dur += current;
-
-        std::lock_guard lock(m_statsMutex);
-        m_stats.disconnected_duration.set(
-            counters[static_cast<std::size_t>(OperatingMode::DISCONNECTED)]
-                .dur.count());
-        m_stats.connected_duration.set(
-            counters[static_cast<std::size_t>(OperatingMode::CONNECTED)]
-                .dur.count());
-        m_stats.syncing_duration.set(
-            counters[static_cast<std::size_t>(OperatingMode::SYNCING)]
-                .dur.count());
-        m_stats.tracking_duration.set(
-            counters[static_cast<std::size_t>(OperatingMode::TRACKING)]
-                .dur.count());
-        m_stats.full_duration.set(
-            counters[static_cast<std::size_t>(OperatingMode::FULL)]
-                .dur.count());
-
-        m_stats.disconnected_transitions.set(
-            counters[static_cast<std::size_t>(OperatingMode::DISCONNECTED)]
-                .transitions);
-        m_stats.connected_transitions.set(
-            counters[static_cast<std::size_t>(OperatingMode::CONNECTED)]
-                .transitions);
-        m_stats.syncing_transitions.set(
-            counters[static_cast<std::size_t>(OperatingMode::SYNCING)]
-                .transitions);
-        m_stats.tracking_transitions.set(
-            counters[static_cast<std::size_t>(OperatingMode::TRACKING)]
-                .transitions);
-        m_stats.full_transitions.set(
-            counters[static_cast<std::size_t>(OperatingMode::FULL)]
-                .transitions);
-    }
+    collect_metrics();
 };
 
 //------------------------------------------------------------------------------
@@ -885,7 +837,53 @@ std::array<Json::StaticString const, 5> const
          Json::StaticString(stateNames[3]),
          Json::StaticString(stateNames[4])}};
 
+static auto const genesisAccountId = calcAccountID(
+    generateKeyPair(KeyType::secp256k1, generateSeed("masterpassphrase"))
+        .first);
+
 //------------------------------------------------------------------------------
+inline OperatingMode
+NetworkOPsImp::getOperatingMode() const
+{
+    return mMode;
+}
+
+inline std::string
+NetworkOPsImp::strOperatingMode(bool const admin /* = false */) const
+{
+    return strOperatingMode(mMode, admin);
+}
+
+inline void
+NetworkOPsImp::setStandAlone()
+{
+    setMode(OperatingMode::FULL);
+}
+
+inline void
+NetworkOPsImp::setNeedNetworkLedger()
+{
+    needNetworkLedger_ = true;
+}
+
+inline void
+NetworkOPsImp::clearNeedNetworkLedger()
+{
+    needNetworkLedger_ = false;
+}
+
+inline bool
+NetworkOPsImp::isNeedNetworkLedger()
+{
+    return needNetworkLedger_;
+}
+
+inline bool
+NetworkOPsImp::isFull()
+{
+    return !needNetworkLedger_ && (mMode == OperatingMode::FULL);
+}
+
 std::string
 NetworkOPsImp::getHostId(bool forAdmin)
 {
@@ -913,18 +911,19 @@ NetworkOPsImp::setStateTimer()
 }
 
 void
-NetworkOPsImp::setHeartbeatTimer()
+NetworkOPsImp::setTimer(
+    boost::asio::steady_timer& timer,
+    const std::chrono::milliseconds& expiry_time,
+    std::function<void()> onExpire,
+    std::function<void()> onError)
 {
     // Only start the timer if waitHandlerCounter_ is not yet joined.
     if (auto optionalCountedHandler = waitHandlerCounter_.wrap(
-            [this](boost::system::error_code const& e) {
+            [this, onExpire, onError](boost::system::error_code const& e) {
                 if ((e.value() == boost::system::errc::success) &&
                     (!m_job_queue.isStopped()))
                 {
-                    m_job_queue.addJob(
-                        jtNETOP_TIMER, "NetOPs.heartbeat", [this](Job&) {
-                            processHeartbeatTimer();
-                        });
+                    onExpire();
                 }
                 // Recover as best we can if an unexpected error occurs.
                 if (e.value() != boost::system::errc::success &&
@@ -932,47 +931,57 @@ NetworkOPsImp::setHeartbeatTimer()
                 {
                     // Try again later and hope for the best.
                     JLOG(m_journal.error())
-                        << "Heartbeat timer got error '" << e.message()
+                        << "Timer got error '" << e.message()
                         << "'.  Restarting timer.";
-                    setHeartbeatTimer();
+                    onError();
                 }
             }))
     {
-        heartbeatTimer_.expires_from_now(mConsensus.parms().ledgerGRANULARITY);
-        heartbeatTimer_.async_wait(std::move(*optionalCountedHandler));
+        timer.expires_from_now(expiry_time);
+        timer.async_wait(std::move(*optionalCountedHandler));
     }
+}
+
+void
+NetworkOPsImp::setHeartbeatTimer()
+{
+    setTimer(
+        heartbeatTimer_,
+        mConsensus.parms().ledgerGRANULARITY,
+        [this]() {
+            m_job_queue.addJob(jtNETOP_TIMER, "NetOPs.heartbeat", [this](Job&) {
+                processHeartbeatTimer();
+            });
+        },
+        [this]() { setHeartbeatTimer(); });
 }
 
 void
 NetworkOPsImp::setClusterTimer()
 {
-    // Only start the timer if waitHandlerCounter_ is not yet joined.
-    if (auto optionalCountedHandler = waitHandlerCounter_.wrap(
-            [this](boost::system::error_code const& e) {
-                if ((e.value() == boost::system::errc::success) &&
-                    (!m_job_queue.isStopped()))
-                {
-                    m_job_queue.addJob(
-                        jtNETOP_CLUSTER, "NetOPs.cluster", [this](Job&) {
-                            processClusterTimer();
-                        });
-                }
-                // Recover as best we can if an unexpected error occurs.
-                if (e.value() != boost::system::errc::success &&
-                    e.value() != boost::asio::error::operation_aborted)
-                {
-                    // Try again later and hope for the best.
-                    JLOG(m_journal.error())
-                        << "Cluster timer got error '" << e.message()
-                        << "'.  Restarting timer.";
-                    setClusterTimer();
-                }
-            }))
-    {
-        using namespace std::chrono_literals;
-        clusterTimer_.expires_from_now(10s);
-        clusterTimer_.async_wait(std::move(*optionalCountedHandler));
-    }
+    using namespace std::chrono_literals;
+    setTimer(
+        clusterTimer_,
+        10s,
+        [this]() {
+            m_job_queue.addJob(jtNETOP_CLUSTER, "NetOPs.cluster", [this](Job&) {
+                processClusterTimer();
+            });
+        },
+        [this]() { setClusterTimer(); });
+}
+
+void
+NetworkOPsImp::setAccountHistoryJobTimer(SubAccountHistoryInfoWeak subInfo)
+{
+    JLOG(m_journal.debug()) << "Scheduling AccountHistory job for account "
+                            << toBase58(subInfo.index_->accountId_);
+    using namespace std::chrono_literals;
+    setTimer(
+        accountHistoryTxTimer_,
+        4s,
+        [this, subInfo]() { addAccountHistoryJob(subInfo); },
+        [this, subInfo]() { setAccountHistoryJobTimer(subInfo); });
 }
 
 void
@@ -1323,7 +1332,7 @@ NetworkOPsImp::apply(std::unique_lock<std::mutex>& batchLock)
         if (changed)
             reportFeeChange();
 
-        boost::optional<LedgerIndex> validatedLedgerIndex;
+        std::optional<LedgerIndex> validatedLedgerIndex;
         if (auto const l = m_ledgerMaster.getValidatedLedger())
             validatedLedgerIndex = l->info().seq;
 
@@ -1365,13 +1374,12 @@ NetworkOPsImp::apply(std::unique_lock<std::mutex>& batchLock)
                     << "Transaction is now included in open ledger";
                 e.transaction->setStatus(INCLUDED);
 
-                auto txCur = e.transaction->getSTransaction();
-                for (auto const& tx : m_ledgerMaster.pruneHeldTransactions(
-                         txCur->getAccountID(sfAccount),
-                         txCur->getSequence() + 1))
+                auto const& txCur = e.transaction->getSTransaction();
+                auto const txNext = m_ledgerMaster.popAcctTransaction(txCur);
+                if (txNext)
                 {
                     std::string reason;
-                    auto const trans = sterilize(*tx);
+                    auto const trans = sterilize(*txNext);
                     auto t = std::make_shared<Transaction>(trans, reason, app_);
                     submit_held.emplace_back(t, false, false, FailHard::no);
                     t->setApplying();
@@ -1448,9 +1456,7 @@ NetworkOPsImp::apply(std::unique_lock<std::mutex>& batchLock)
                         app_.timeKeeper().now().time_since_epoch().count());
                     tx.set_deferred(e.result == terQUEUED);
                     // FIXME: This should be when we received it
-                    app_.overlay().foreach(send_if_not(
-                        std::make_shared<Message>(tx, protocol::mtTRANSACTION),
-                        peer_in_set(*toSkip)));
+                    app_.overlay().relay(e.transaction->getID(), tx, *toSkip);
                     e.transaction->setBroadcast();
                 }
             }
@@ -1555,11 +1561,60 @@ NetworkOPsImp::getOwnerInfo(
 // Other
 //
 
+inline bool
+NetworkOPsImp::isBlocked()
+{
+    return isAmendmentBlocked() || isUNLBlocked();
+}
+
+inline bool
+NetworkOPsImp::isAmendmentBlocked()
+{
+    return amendmentBlocked_;
+}
+
 void
 NetworkOPsImp::setAmendmentBlocked()
 {
     amendmentBlocked_ = true;
-    setMode(OperatingMode::TRACKING);
+    setMode(OperatingMode::CONNECTED);
+}
+
+inline bool
+NetworkOPsImp::isAmendmentWarned()
+{
+    return !amendmentBlocked_ && amendmentWarned_;
+}
+
+inline void
+NetworkOPsImp::setAmendmentWarned()
+{
+    amendmentWarned_ = true;
+}
+
+inline void
+NetworkOPsImp::clearAmendmentWarned()
+{
+    amendmentWarned_ = false;
+}
+
+inline bool
+NetworkOPsImp::isUNLBlocked()
+{
+    return unlBlocked_;
+}
+
+void
+NetworkOPsImp::setUNLBlocked()
+{
+    unlBlocked_ = true;
+    setMode(OperatingMode::CONNECTED);
+}
+
+inline void
+NetworkOPsImp::clearUNLBlocked()
+{
+    unlBlocked_ = false;
 }
 
 bool
@@ -1648,7 +1703,7 @@ NetworkOPsImp::checkLastClosedLedger(
     }
 
     JLOG(m_journal.warn()) << "We are not running on the consensus ledger";
-    JLOG(m_journal.info()) << "Our LCL: " << getJson(*ourClosed);
+    JLOG(m_journal.info()) << "Our LCL: " << getJson({*ourClosed, {}});
     JLOG(m_journal.info()) << "Net LCL " << closedLedger;
 
     if ((mMode == OperatingMode::TRACKING) || (mMode == OperatingMode::FULL))
@@ -1687,7 +1742,7 @@ NetworkOPsImp::switchLastClosedLedger(
 
         auto retries = m_localTX->getTxSet();
         auto const lastVal = app_.getLedgerMaster().getValidatedLedger();
-        boost::optional<Rules> rules;
+        std::optional<Rules> rules;
         if (lastVal)
             rules.emplace(*lastVal, app_.config().features);
         else
@@ -1753,7 +1808,11 @@ NetworkOPsImp::beginConsensus(uint256 const& networkClosed)
     if (prevLedger->rules().enabled(featureNegativeUNL))
         app_.validators().setNegativeUNL(prevLedger->negativeUNL());
     TrustChanges const changes = app_.validators().updateTrusted(
-        app_.getValidations().getCurrentNodeIDs());
+        app_.getValidations().getCurrentNodeIDs(),
+        closingInfo.parentCloseTime,
+        *this,
+        app_.overlay(),
+        app_.getHashRouter());
 
     if (!changes.added.empty() || !changes.removed.empty())
         app_.getValidations().trustChanged(changes.added, changes.removed);
@@ -1774,12 +1833,6 @@ NetworkOPsImp::beginConsensus(uint256 const& networkClosed)
 
     JLOG(m_journal.debug()) << "Initiating consensus engine";
     return true;
-}
-
-uint256
-NetworkOPsImp::getConsensusLCL()
-{
-    return mConsensus.prevLedgerID();
 }
 
 bool
@@ -1891,6 +1944,9 @@ NetworkOPsImp::pubManifest(Manifest const& mo)
         if (auto sig = mo.getSignature())
             jvObj[jss::signature] = strHex(*sig);
         jvObj[jss::master_signature] = strHex(mo.getMasterSignature());
+        if (!mo.domain.empty())
+            jvObj[jss::domain] = mo.domain;
+        jvObj[jss::manifest] = strHex(mo.serialized);
 
         for (auto i = mStreamMaps[sManifests].begin();
              i != mStreamMaps[sManifests].end();)
@@ -1925,7 +1981,7 @@ NetworkOPsImp::ServerFeeSummary::operator!=(
 {
     if (loadFactorServer != b.loadFactorServer ||
         loadBaseServer != b.loadBaseServer || baseFee != b.baseFee ||
-        em.is_initialized() != b.em.is_initialized())
+        em.has_value() != b.em.has_value())
         return true;
 
     if (em && b.em)
@@ -2063,6 +2119,16 @@ NetworkOPsImp::pubValidation(std::shared_ptr<STValidation> const& val)
         jvObj[jss::full] = val->isFull();
         jvObj[jss::flags] = val->getFlags();
         jvObj[jss::signing_time] = *(*val)[~sfSigningTime];
+        jvObj[jss::data] = strHex(val->getSerializer().slice());
+
+        if (auto version = (*val)[~sfServerVersion])
+            jvObj[jss::server_version] = std::to_string(*version);
+
+        if (auto cookie = (*val)[~sfCookie])
+            jvObj[jss::cookie] = std::to_string(*cookie);
+
+        if (auto hash = (*val)[~sfValidatedHash])
+            jvObj[jss::validated_hash] = strHex(*hash);
 
         auto const masterKey =
             app_.validatorManifests().getMasterKey(signerPublic);
@@ -2155,8 +2221,8 @@ NetworkOPsImp::setMode(OperatingMode om)
             om = OperatingMode::CONNECTED;
     }
 
-    if ((om > OperatingMode::TRACKING) && amendmentBlocked_)
-        om = OperatingMode::TRACKING;
+    if ((om > OperatingMode::CONNECTED) && isBlocked())
+        om = OperatingMode::CONNECTED;
 
     if (mMode == om)
         return;
@@ -2169,312 +2235,12 @@ NetworkOPsImp::setMode(OperatingMode om)
     pubServer();
 }
 
-std::string
-NetworkOPsImp::transactionsSQL(
-    std::string selection,
-    AccountID const& account,
-    std::int32_t minLedger,
-    std::int32_t maxLedger,
-    bool descending,
-    std::uint32_t offset,
-    int limit,
-    bool binary,
-    bool count,
-    bool bUnlimited)
-{
-    std::uint32_t NONBINARY_PAGE_LENGTH = 200;
-    std::uint32_t BINARY_PAGE_LENGTH = 500;
-
-    std::uint32_t numberOfResults;
-
-    if (count)
-    {
-        numberOfResults = 1000000000;
-    }
-    else if (limit < 0)
-    {
-        numberOfResults = binary ? BINARY_PAGE_LENGTH : NONBINARY_PAGE_LENGTH;
-    }
-    else if (!bUnlimited)
-    {
-        numberOfResults = std::min(
-            binary ? BINARY_PAGE_LENGTH : NONBINARY_PAGE_LENGTH,
-            static_cast<std::uint32_t>(limit));
-    }
-    else
-    {
-        numberOfResults = limit;
-    }
-
-    std::string maxClause = "";
-    std::string minClause = "";
-
-    if (maxLedger != -1)
-    {
-        maxClause = boost::str(
-            boost::format("AND AccountTransactions.LedgerSeq <= '%u'") %
-            maxLedger);
-    }
-
-    if (minLedger != -1)
-    {
-        minClause = boost::str(
-            boost::format("AND AccountTransactions.LedgerSeq >= '%u'") %
-            minLedger);
-    }
-
-    std::string sql;
-
-    if (count)
-        sql = boost::str(
-            boost::format("SELECT %s FROM AccountTransactions "
-                          "WHERE Account = '%s' %s %s LIMIT %u, %u;") %
-            selection % app_.accountIDCache().toBase58(account) % maxClause %
-            minClause % beast::lexicalCastThrow<std::string>(offset) %
-            beast::lexicalCastThrow<std::string>(numberOfResults));
-    else
-        sql = boost::str(
-            boost::format(
-                "SELECT %s FROM "
-                "AccountTransactions INNER JOIN Transactions "
-                "ON Transactions.TransID = AccountTransactions.TransID "
-                "WHERE Account = '%s' %s %s "
-                "ORDER BY AccountTransactions.LedgerSeq %s, "
-                "AccountTransactions.TxnSeq %s, AccountTransactions.TransID %s "
-                "LIMIT %u, %u;") %
-            selection % app_.accountIDCache().toBase58(account) % maxClause %
-            minClause % (descending ? "DESC" : "ASC") %
-            (descending ? "DESC" : "ASC") % (descending ? "DESC" : "ASC") %
-            beast::lexicalCastThrow<std::string>(offset) %
-            beast::lexicalCastThrow<std::string>(numberOfResults));
-    JLOG(m_journal.trace()) << "txSQL query: " << sql;
-    return sql;
-}
-
-NetworkOPs::AccountTxs
-NetworkOPsImp::getAccountTxs(
-    AccountID const& account,
-    std::int32_t minLedger,
-    std::int32_t maxLedger,
-    bool descending,
-    std::uint32_t offset,
-    int limit,
-    bool bUnlimited)
-{
-    // can be called with no locks
-    AccountTxs ret;
-
-    std::string sql = transactionsSQL(
-        "AccountTransactions.LedgerSeq,Status,RawTxn,TxnMeta",
-        account,
-        minLedger,
-        maxLedger,
-        descending,
-        offset,
-        limit,
-        false,
-        false,
-        bUnlimited);
-
-    {
-        auto db = app_.getTxnDB().checkoutDb();
-
-        boost::optional<std::uint64_t> ledgerSeq;
-        boost::optional<std::string> status;
-        soci::blob sociTxnBlob(*db), sociTxnMetaBlob(*db);
-        soci::indicator rti, tmi;
-        Blob rawTxn, txnMeta;
-
-        soci::statement st =
-            (db->prepare << sql,
-             soci::into(ledgerSeq),
-             soci::into(status),
-             soci::into(sociTxnBlob, rti),
-             soci::into(sociTxnMetaBlob, tmi));
-
-        st.execute();
-        while (st.fetch())
-        {
-            if (soci::i_ok == rti)
-                convert(sociTxnBlob, rawTxn);
-            else
-                rawTxn.clear();
-
-            if (soci::i_ok == tmi)
-                convert(sociTxnMetaBlob, txnMeta);
-            else
-                txnMeta.clear();
-
-            auto txn = Transaction::transactionFromSQL(
-                ledgerSeq, status, rawTxn, app_);
-
-            if (txnMeta.empty())
-            {  // Work around a bug that could leave the metadata missing
-                auto const seq =
-                    rangeCheckedCast<std::uint32_t>(ledgerSeq.value_or(0));
-
-                JLOG(m_journal.warn())
-                    << "Recovering ledger " << seq << ", txn " << txn->getID();
-
-                if (auto l = m_ledgerMaster.getLedgerBySeq(seq))
-                    pendSaveValidated(app_, l, false, false);
-            }
-
-            if (txn)
-                ret.emplace_back(
-                    txn,
-                    std::make_shared<TxMeta>(
-                        txn->getID(), txn->getLedger(), txnMeta));
-        }
-    }
-
-    return ret;
-}
-
-std::vector<NetworkOPsImp::txnMetaLedgerType>
-NetworkOPsImp::getAccountTxsB(
-    AccountID const& account,
-    std::int32_t minLedger,
-    std::int32_t maxLedger,
-    bool descending,
-    std::uint32_t offset,
-    int limit,
-    bool bUnlimited)
-{
-    // can be called with no locks
-    std::vector<txnMetaLedgerType> ret;
-
-    std::string sql = transactionsSQL(
-        "AccountTransactions.LedgerSeq,Status,RawTxn,TxnMeta",
-        account,
-        minLedger,
-        maxLedger,
-        descending,
-        offset,
-        limit,
-        true /*binary*/,
-        false,
-        bUnlimited);
-
-    {
-        auto db = app_.getTxnDB().checkoutDb();
-
-        boost::optional<std::uint64_t> ledgerSeq;
-        boost::optional<std::string> status;
-        soci::blob sociTxnBlob(*db), sociTxnMetaBlob(*db);
-        soci::indicator rti, tmi;
-
-        soci::statement st =
-            (db->prepare << sql,
-             soci::into(ledgerSeq),
-             soci::into(status),
-             soci::into(sociTxnBlob, rti),
-             soci::into(sociTxnMetaBlob, tmi));
-
-        st.execute();
-        while (st.fetch())
-        {
-            Blob rawTxn;
-            if (soci::i_ok == rti)
-                convert(sociTxnBlob, rawTxn);
-            Blob txnMeta;
-            if (soci::i_ok == tmi)
-                convert(sociTxnMetaBlob, txnMeta);
-
-            auto const seq =
-                rangeCheckedCast<std::uint32_t>(ledgerSeq.value_or(0));
-
-            ret.emplace_back(std::move(rawTxn), std::move(txnMeta), seq);
-        }
-    }
-
-    return ret;
-}
-
-NetworkOPsImp::AccountTxs
-NetworkOPsImp::getTxsAccount(
-    AccountID const& account,
-    std::int32_t minLedger,
-    std::int32_t maxLedger,
-    bool forward,
-    std::optional<AccountTxMarker>& marker,
-    int limit,
-    bool bUnlimited)
-{
-    static std::uint32_t const page_length(200);
-
-    Application& app = app_;
-    NetworkOPsImp::AccountTxs ret;
-
-    auto bound = [&ret, &app](
-                     std::uint32_t ledger_index,
-                     std::string const& status,
-                     Blob&& rawTxn,
-                     Blob&& rawMeta) {
-        convertBlobsToTxResult(ret, ledger_index, status, rawTxn, rawMeta, app);
-    };
-
-    accountTxPage(
-        app_.getTxnDB(),
-        app_.accountIDCache(),
-        std::bind(saveLedgerAsync, std::ref(app_), std::placeholders::_1),
-        bound,
-        account,
-        minLedger,
-        maxLedger,
-        forward,
-        marker,
-        limit,
-        bUnlimited,
-        page_length);
-
-    return ret;
-}
-
-NetworkOPsImp::MetaTxsList
-NetworkOPsImp::getTxsAccountB(
-    AccountID const& account,
-    std::int32_t minLedger,
-    std::int32_t maxLedger,
-    bool forward,
-    std::optional<AccountTxMarker>& marker,
-    int limit,
-    bool bUnlimited)
-{
-    static const std::uint32_t page_length(500);
-
-    MetaTxsList ret;
-
-    auto bound = [&ret](
-                     std::uint32_t ledgerIndex,
-                     std::string const& status,
-                     Blob&& rawTxn,
-                     Blob&& rawMeta) {
-        ret.emplace_back(std::move(rawTxn), std::move(rawMeta), ledgerIndex);
-    };
-
-    accountTxPage(
-        app_.getTxnDB(),
-        app_.accountIDCache(),
-        std::bind(saveLedgerAsync, std::ref(app_), std::placeholders::_1),
-        bound,
-        account,
-        minLedger,
-        maxLedger,
-        forward,
-        marker,
-        limit,
-        bUnlimited,
-        page_length);
-    return ret;
-}
-
 bool
 NetworkOPsImp::recvValidation(
     std::shared_ptr<STValidation> const& val,
     std::string const& source)
 {
-    JLOG(m_journal.debug())
+    JLOG(m_journal.trace())
         << "recvValidation " << val->getLedgerHash() << " from " << source;
 
     handleNewValidation(app_, val, source);
@@ -2508,6 +2274,15 @@ NetworkOPsImp::getServerInfo(bool human, bool admin, bool counters)
                 "This server is amendment blocked, and must be updated to be "
                 "able to stay in sync with the network.";
         }
+        if (isUNLBlocked())
+        {
+            Json::Value& w = warnings.append(Json::objectValue);
+            w[jss::id] = warnRPC_EXPIRED_VALIDATOR_LIST;
+            w[jss::message] =
+                "This server has an expired validator list. validators.txt "
+                "may be incorrectly configured or some [validator_list_sites] "
+                "may be unreachable.";
+        }
         if (admin && isAmendmentWarned())
         {
             Json::Value& w = warnings.append(Json::objectValue);
@@ -2533,14 +2308,19 @@ NetworkOPsImp::getServerInfo(bool human, bool admin, bool counters)
     if (human)
         info[jss::hostid] = getHostId(admin);
 
-    if (auto const netid = app_.overlay().networkID())
-        info[jss::network_id] = static_cast<Json::UInt>(*netid);
+    // domain: if configured with a domain, report it:
+    if (!app_.config().SERVER_DOMAIN.empty())
+        info[jss::server_domain] = app_.config().SERVER_DOMAIN;
+
+    if (!app_.config().reporting())
+        if (auto const netid = app_.overlay().networkID())
+            info[jss::network_id] = static_cast<Json::UInt>(*netid);
 
     info[jss::build_version] = BuildInfo::getVersionString();
 
     info[jss::server_state] = strOperatingMode(admin);
 
-    info[jss::time] = to_string(date::floor<std::chrono::microseconds>(
+    info[jss::time] = to_string(std::chrono::floor<std::chrono::microseconds>(
         std::chrono::system_clock::now()));
 
     if (needNetworkLedger_)
@@ -2551,6 +2331,25 @@ NetworkOPsImp::getServerInfo(bool human, bool admin, bool counters)
 
     if (admin)
     {
+        switch (app_.config().NODE_SIZE)
+        {
+            case 0:
+                info[jss::node_size] = "tiny";
+                break;
+            case 1:
+                info[jss::node_size] = "small";
+                break;
+            case 2:
+                info[jss::node_size] = "medium";
+                break;
+            case 3:
+                info[jss::node_size] = "large";
+                break;
+            case 4:
+                info[jss::node_size] = "huge";
+                break;
+        }
+
         auto when = app_.validators().expires();
 
         if (!human)
@@ -2610,6 +2409,13 @@ NetworkOPsImp::getServerInfo(bool human, bool admin, bool counters)
     if (counters)
     {
         info[jss::counters] = app_.getPerfLog().countersJson();
+
+        Json::Value nodestore(Json::objectValue);
+        if (app_.getShardStore())
+            app_.getShardStore()->getCountsJson(nodestore);
+        else
+            app_.getNodeStore().getCountsJson(nodestore);
+        info[jss::counters][jss::nodestore] = nodestore;
         info[jss::current_activities] = app_.getPerfLog().currentJson();
     }
 
@@ -2626,7 +2432,8 @@ NetworkOPsImp::getServerInfo(bool human, bool admin, bool counters)
     if (fp != 0)
         info[jss::fetch_pack] = Json::UInt(fp);
 
-    info[jss::peers] = Json::UInt(app_.overlay().size());
+    if (!app_.config().reporting())
+        info[jss::peers] = Json::UInt(app_.overlay().size());
 
     Json::Value lastClose = Json::objectValue;
     lastClose[jss::proposers] = Json::UInt(mConsensus.prevProposers());
@@ -2649,77 +2456,82 @@ NetworkOPsImp::getServerInfo(bool human, bool admin, bool counters)
     if (admin)
         info[jss::load] = m_job_queue.getJson();
 
-    auto const escalationMetrics =
-        app_.getTxQ().getMetrics(*app_.openLedger().current());
-
-    auto const loadFactorServer = app_.getFeeTrack().getLoadFactor();
-    auto const loadBaseServer = app_.getFeeTrack().getLoadBase();
-    /* Scale the escalated fee level to unitless "load factor".
-       In practice, this just strips the units, but it will continue
-       to work correctly if either base value ever changes. */
-    auto const loadFactorFeeEscalation =
-        mulDiv(
-            escalationMetrics.openLedgerFeeLevel,
-            loadBaseServer,
-            escalationMetrics.referenceFeeLevel)
-            .second;
-
-    auto const loadFactor = std::max(
-        safe_cast<std::uint64_t>(loadFactorServer), loadFactorFeeEscalation);
-
-    if (!human)
+    if (!app_.config().reporting())
     {
-        info[jss::load_base] = loadBaseServer;
-        info[jss::load_factor] = trunc32(loadFactor);
-        info[jss::load_factor_server] = loadFactorServer;
+        auto const escalationMetrics =
+            app_.getTxQ().getMetrics(*app_.openLedger().current());
 
-        /* Json::Value doesn't support uint64, so clamp to max
-            uint32 value. This is mostly theoretical, since there
-            probably isn't enough extant XRP to drive the factor
-            that high.
-        */
-        info[jss::load_factor_fee_escalation] =
-            escalationMetrics.openLedgerFeeLevel.jsonClipped();
-        info[jss::load_factor_fee_queue] =
-            escalationMetrics.minProcessingFeeLevel.jsonClipped();
-        info[jss::load_factor_fee_reference] =
-            escalationMetrics.referenceFeeLevel.jsonClipped();
-    }
-    else
-    {
-        info[jss::load_factor] =
-            static_cast<double>(loadFactor) / loadBaseServer;
+        auto const loadFactorServer = app_.getFeeTrack().getLoadFactor();
+        auto const loadBaseServer = app_.getFeeTrack().getLoadBase();
+        /* Scale the escalated fee level to unitless "load factor".
+           In practice, this just strips the units, but it will continue
+           to work correctly if either base value ever changes. */
+        auto const loadFactorFeeEscalation =
+            mulDiv(
+                escalationMetrics.openLedgerFeeLevel,
+                loadBaseServer,
+                escalationMetrics.referenceFeeLevel)
+                .second;
 
-        if (loadFactorServer != loadFactor)
-            info[jss::load_factor_server] =
-                static_cast<double>(loadFactorServer) / loadBaseServer;
+        auto const loadFactor = std::max(
+            safe_cast<std::uint64_t>(loadFactorServer),
+            loadFactorFeeEscalation);
 
-        if (admin)
+        if (!human)
         {
-            std::uint32_t fee = app_.getFeeTrack().getLocalFee();
-            if (fee != loadBaseServer)
-                info[jss::load_factor_local] =
-                    static_cast<double>(fee) / loadBaseServer;
-            fee = app_.getFeeTrack().getRemoteFee();
-            if (fee != loadBaseServer)
-                info[jss::load_factor_net] =
-                    static_cast<double>(fee) / loadBaseServer;
-            fee = app_.getFeeTrack().getClusterFee();
-            if (fee != loadBaseServer)
-                info[jss::load_factor_cluster] =
-                    static_cast<double>(fee) / loadBaseServer;
-        }
-        if (escalationMetrics.openLedgerFeeLevel !=
-                escalationMetrics.referenceFeeLevel &&
-            (admin || loadFactorFeeEscalation != loadFactor))
+            info[jss::load_base] = loadBaseServer;
+            info[jss::load_factor] = trunc32(loadFactor);
+            info[jss::load_factor_server] = loadFactorServer;
+
+            /* Json::Value doesn't support uint64, so clamp to max
+                uint32 value. This is mostly theoretical, since there
+                probably isn't enough extant XRP to drive the factor
+                that high.
+            */
             info[jss::load_factor_fee_escalation] =
-                escalationMetrics.openLedgerFeeLevel.decimalFromReference(
-                    escalationMetrics.referenceFeeLevel);
-        if (escalationMetrics.minProcessingFeeLevel !=
-            escalationMetrics.referenceFeeLevel)
+                escalationMetrics.openLedgerFeeLevel.jsonClipped();
             info[jss::load_factor_fee_queue] =
-                escalationMetrics.minProcessingFeeLevel.decimalFromReference(
-                    escalationMetrics.referenceFeeLevel);
+                escalationMetrics.minProcessingFeeLevel.jsonClipped();
+            info[jss::load_factor_fee_reference] =
+                escalationMetrics.referenceFeeLevel.jsonClipped();
+        }
+        else
+        {
+            info[jss::load_factor] =
+                static_cast<double>(loadFactor) / loadBaseServer;
+
+            if (loadFactorServer != loadFactor)
+                info[jss::load_factor_server] =
+                    static_cast<double>(loadFactorServer) / loadBaseServer;
+
+            if (admin)
+            {
+                std::uint32_t fee = app_.getFeeTrack().getLocalFee();
+                if (fee != loadBaseServer)
+                    info[jss::load_factor_local] =
+                        static_cast<double>(fee) / loadBaseServer;
+                fee = app_.getFeeTrack().getRemoteFee();
+                if (fee != loadBaseServer)
+                    info[jss::load_factor_net] =
+                        static_cast<double>(fee) / loadBaseServer;
+                fee = app_.getFeeTrack().getClusterFee();
+                if (fee != loadBaseServer)
+                    info[jss::load_factor_cluster] =
+                        static_cast<double>(fee) / loadBaseServer;
+            }
+            if (escalationMetrics.openLedgerFeeLevel !=
+                    escalationMetrics.referenceFeeLevel &&
+                (admin || loadFactorFeeEscalation != loadFactor))
+                info[jss::load_factor_fee_escalation] =
+                    escalationMetrics.openLedgerFeeLevel.decimalFromReference(
+                        escalationMetrics.referenceFeeLevel);
+            if (escalationMetrics.minProcessingFeeLevel !=
+                escalationMetrics.referenceFeeLevel)
+                info[jss::load_factor_fee_queue] =
+                    escalationMetrics.minProcessingFeeLevel
+                        .decimalFromReference(
+                            escalationMetrics.referenceFeeLevel);
+        }
     }
 
     bool valid = false;
@@ -2727,7 +2539,7 @@ NetworkOPsImp::getServerInfo(bool human, bool admin, bool counters)
 
     if (lpClosed)
         valid = true;
-    else
+    else if (!app_.config().reporting())
         lpClosed = m_ledgerMaster.getClosedLedger();
 
     if (lpClosed)
@@ -2797,12 +2609,19 @@ NetworkOPsImp::getServerInfo(bool human, bool admin, bool counters)
     std::tie(info[jss::state_accounting], info[jss::server_state_duration_us]) =
         accounting_.json();
     info[jss::uptime] = UptimeClock::now().time_since_epoch().count();
-    info[jss::jq_trans_overflow] =
-        std::to_string(app_.overlay().getJqTransOverflow());
-    info[jss::peer_disconnects] =
-        std::to_string(app_.overlay().getPeerDisconnect());
-    info[jss::peer_disconnects_resources] =
-        std::to_string(app_.overlay().getPeerDisconnectCharges());
+    if (!app_.config().reporting())
+    {
+        info[jss::jq_trans_overflow] =
+            std::to_string(app_.overlay().getJqTransOverflow());
+        info[jss::peer_disconnects] =
+            std::to_string(app_.overlay().getPeerDisconnect());
+        info[jss::peer_disconnects_resources] =
+            std::to_string(app_.overlay().getPeerDisconnectCharges());
+    }
+    else
+    {
+        info["reporting"] = app_.getReportingETL().getInfo();
+    }
 
     return info;
 }
@@ -2853,6 +2672,163 @@ NetworkOPsImp::pubProposedTransaction(
 }
 
 void
+NetworkOPsImp::forwardProposedTransaction(Json::Value const& jvObj)
+{
+    // reporting does not forward validated transactions
+    // validated transactions will be published to the proper streams when the
+    // etl process writes a validated ledger
+    if (jvObj[jss::validated].asBool())
+        return;
+    {
+        std::lock_guard sl(mSubLock);
+
+        auto it = mStreamMaps[sRTTransactions].begin();
+        while (it != mStreamMaps[sRTTransactions].end())
+        {
+            InfoSub::pointer p = it->second.lock();
+
+            if (p)
+            {
+                p->send(jvObj, true);
+                ++it;
+            }
+            else
+            {
+                it = mStreamMaps[sRTTransactions].erase(it);
+            }
+        }
+    }
+
+    forwardProposedAccountTransaction(jvObj);
+}
+
+void
+NetworkOPsImp::forwardValidation(Json::Value const& jvObj)
+{
+    std::lock_guard sl(mSubLock);
+
+    for (auto i = mStreamMaps[sValidations].begin();
+         i != mStreamMaps[sValidations].end();)
+    {
+        if (auto p = i->second.lock())
+        {
+            p->send(jvObj, true);
+            ++i;
+        }
+        else
+        {
+            i = mStreamMaps[sValidations].erase(i);
+        }
+    }
+}
+
+void
+NetworkOPsImp::forwardManifest(Json::Value const& jvObj)
+{
+    std::lock_guard sl(mSubLock);
+
+    for (auto i = mStreamMaps[sManifests].begin();
+         i != mStreamMaps[sManifests].end();)
+    {
+        if (auto p = i->second.lock())
+        {
+            p->send(jvObj, true);
+            ++i;
+        }
+        else
+        {
+            i = mStreamMaps[sManifests].erase(i);
+        }
+    }
+}
+
+static void
+getAccounts(Json::Value const& jvObj, std::vector<AccountID>& accounts)
+{
+    for (auto& jv : jvObj)
+    {
+        if (jv.isObject())
+        {
+            getAccounts(jv, accounts);
+        }
+        else if (jv.isString())
+        {
+            auto account = RPC::accountFromStringStrict(jv.asString());
+            if (account)
+                accounts.push_back(*account);
+        }
+    }
+}
+
+void
+NetworkOPsImp::forwardProposedAccountTransaction(Json::Value const& jvObj)
+{
+    hash_set<InfoSub::pointer> notify;
+    int iProposed = 0;
+    // check if there are any subscribers before attempting to parse the JSON
+    {
+        std::lock_guard sl(mSubLock);
+
+        if (mSubRTAccount.empty())
+            return;
+    }
+
+    // parse the JSON outside of the lock
+    std::vector<AccountID> accounts;
+    if (jvObj.isMember(jss::transaction))
+    {
+        try
+        {
+            getAccounts(jvObj[jss::transaction], accounts);
+        }
+        catch (...)
+        {
+            JLOG(m_journal.debug())
+                << __func__ << " : "
+                << "error parsing json for accounts affected";
+            return;
+        }
+    }
+    {
+        std::lock_guard sl(mSubLock);
+
+        if (!mSubRTAccount.empty())
+        {
+            for (auto const& affectedAccount : accounts)
+            {
+                auto simiIt = mSubRTAccount.find(affectedAccount);
+                if (simiIt != mSubRTAccount.end())
+                {
+                    auto it = simiIt->second.begin();
+
+                    while (it != simiIt->second.end())
+                    {
+                        InfoSub::pointer p = it->second.lock();
+
+                        if (p)
+                        {
+                            notify.insert(p);
+                            ++it;
+                            ++iProposed;
+                        }
+                        else
+                            it = simiIt->second.erase(it);
+                    }
+                }
+            }
+        }
+    }
+    JLOG(m_journal.trace()) << "forwardProposedAccountTransaction:"
+                            << " iProposed=" << iProposed;
+
+    if (!notify.empty())
+    {
+        for (InfoSub::ref isrListener : notify)
+            isrListener->send(jvObj, true);
+    }
+}
+
+void
 NetworkOPsImp::pubLedger(std::shared_ptr<ReadView const> const& lpAccepted)
 {
     // Ledgers are published only when they acquire sufficient validations
@@ -2862,13 +2838,14 @@ NetworkOPsImp::pubLedger(std::shared_ptr<ReadView const> const& lpAccepted)
         app_.getAcceptedLedgerCache().fetch(lpAccepted->info().hash);
     if (!alpAccepted)
     {
-        alpAccepted = std::make_shared<AcceptedLedger>(
-            lpAccepted, app_.accountIDCache(), app_.logs());
+        alpAccepted = std::make_shared<AcceptedLedger>(lpAccepted, app_);
         app_.getAcceptedLedgerCache().canonicalize_replace_client(
             lpAccepted->info().hash, alpAccepted);
     }
 
     {
+        JLOG(m_journal.debug())
+            << "Publishing ledger = " << lpAccepted->info().seq;
         std::lock_guard sl(mSubLock);
 
         if (!mStreamMaps[sLedger].empty())
@@ -2902,11 +2879,36 @@ NetworkOPsImp::pubLedger(std::shared_ptr<ReadView const> const& lpAccepted)
                 InfoSub::pointer p = it->second.lock();
                 if (p)
                 {
+                    JLOG(m_journal.debug())
+                        << "Publishing ledger = " << lpAccepted->info().seq
+                        << " : consumer = " << p->getConsumer()
+                        << " : obj = " << jvObj;
                     p->send(jvObj, true);
                     ++it;
                 }
                 else
                     it = mStreamMaps[sLedger].erase(it);
+            }
+        }
+
+        {
+            static bool firstTime = true;
+            if (firstTime)
+            {
+                // First validated ledger, start delayed SubAccountHistory
+                firstTime = false;
+                for (auto& outer : mSubAccountHistory)
+                {
+                    for (auto& inner : outer.second)
+                    {
+                        auto& subInfo = inner.second;
+                        if (subInfo.index_->separationLedgerSeq_ == 0)
+                        {
+                            subAccountHistoryStart(
+                                alpAccepted->getLedger(), subInfo);
+                        }
+                    }
+                }
             }
         }
     }
@@ -2923,6 +2925,8 @@ NetworkOPsImp::pubLedger(std::shared_ptr<ReadView const> const& lpAccepted)
 void
 NetworkOPsImp::reportFeeChange()
 {
+    if (app_.config().reporting())
+        return;
     ServerFeeSummary f{
         app_.openLedger().current()->fees().base,
         app_.getTxQ().getMetrics(*app_.openLedger().current()),
@@ -2945,6 +2949,17 @@ NetworkOPsImp::reportConsensusStateChange(ConsensusPhase phase)
         jtCLIENT,
         "reportConsensusStateChange->pubConsensus",
         [this, phase](Job&) { pubConsensus(phase); });
+}
+
+inline void
+NetworkOPsImp::updateLocalTx(ReadView const& view)
+{
+    m_localTX->sweep(view);
+}
+inline std::size_t
+NetworkOPsImp::getLocalTxCount()
+{
+    return m_localTX->size();
 }
 
 // This routine should only be used to publish accepted or validated
@@ -3068,18 +3083,21 @@ NetworkOPsImp::pubAccountTransaction(
     int iProposed = 0;
     int iAccepted = 0;
 
+    std::vector<SubAccountHistoryInfo> accountHistoryNotify;
+    auto const currLedgerSeq = lpCurrent->seq();
     {
         std::lock_guard sl(mSubLock);
 
         if (!bAccepted && mSubRTAccount.empty())
             return;
 
-        if (!mSubAccount.empty() || (!mSubRTAccount.empty()))
+        if (!mSubAccount.empty() || (!mSubRTAccount.empty()) ||
+            !mSubAccountHistory.empty())
         {
             for (auto const& affectedAccount : alTx.getAffected())
             {
-                auto simiIt = mSubRTAccount.find(affectedAccount);
-                if (simiIt != mSubRTAccount.end())
+                if (auto simiIt = mSubRTAccount.find(affectedAccount);
+                    simiIt != mSubRTAccount.end())
                 {
                     auto it = simiIt->second.begin();
 
@@ -3100,9 +3118,8 @@ NetworkOPsImp::pubAccountTransaction(
 
                 if (bAccepted)
                 {
-                    simiIt = mSubAccount.find(affectedAccount);
-
-                    if (simiIt != mSubAccount.end())
+                    if (auto simiIt = mSubAccount.find(affectedAccount);
+                        simiIt != mSubAccount.end())
                     {
                         auto it = simiIt->second.begin();
                         while (it != simiIt->second.end())
@@ -3119,15 +3136,46 @@ NetworkOPsImp::pubAccountTransaction(
                                 it = simiIt->second.erase(it);
                         }
                     }
+
+                    if (auto histoIt = mSubAccountHistory.find(affectedAccount);
+                        histoIt != mSubAccountHistory.end())
+                    {
+                        auto& subs = histoIt->second;
+                        auto it = subs.begin();
+                        while (it != subs.end())
+                        {
+                            SubAccountHistoryInfoWeak const& info = it->second;
+                            if (currLedgerSeq <=
+                                info.index_->separationLedgerSeq_)
+                            {
+                                ++it;
+                                continue;
+                            }
+
+                            if (auto isSptr = info.sinkWptr_.lock(); isSptr)
+                            {
+                                accountHistoryNotify.emplace_back(
+                                    SubAccountHistoryInfo{isSptr, info.index_});
+                                ++it;
+                            }
+                            else
+                            {
+                                it = subs.erase(it);
+                            }
+                        }
+                        if (subs.empty())
+                            mSubAccountHistory.erase(histoIt);
+                    }
                 }
             }
         }
     }
+
     JLOG(m_journal.trace())
         << "pubAccountTransaction:"
         << " iProposed=" << iProposed << " iAccepted=" << iAccepted;
 
-    if (!notify.empty())
+    if (!notify.empty() || !accountHistoryNotify.empty())
     {
         std::shared_ptr<STTx const> stTxn = alTx.getTxn();
         Json::Value jvObj =
@@ -3145,6 +3193,16 @@ NetworkOPsImp::pubAccountTransaction(
 
         for (InfoSub::ref isrListener : notify)
             isrListener->send(jvObj, true);
+
+        assert(!jvObj.isMember(jss::account_history_tx_stream));
+        for (auto& info : accountHistoryNotify)
+        {
+            auto& index = info.index_;
+            if (index->forwardTxIndex_ == 0 && !index->haveHistorical_)
+                jvObj[jss::account_history_tx_first] = true;
+            jvObj[jss::account_history_tx_index] = index->forwardTxIndex_++;
+            info.sink_->send(jvObj, true);
+        }
     }
 }
 
@@ -3233,6 +3291,456 @@ NetworkOPsImp::unsubAccountInternal(
     }
 }
 
+void
+NetworkOPsImp::addAccountHistoryJob(SubAccountHistoryInfoWeak subInfo)
+{
+    enum DatabaseType { Postgres, Sqlite, None };
+    static const auto databaseType = [&]() -> DatabaseType {
+#ifdef RIPPLED_REPORTING
+        if (app_.config().reporting())
+        {
+            if (dynamic_cast<RelationalDBInterfacePostgres*>(
+                    &app_.getRelationalDBInterface()))
+            {
+                return DatabaseType::Postgres;
+            }
+            return DatabaseType::None;
+        }
+        else
+        {
+            if (dynamic_cast<RelationalDBInterfaceSqlite*>(
+                    &app_.getRelationalDBInterface()))
+            {
+                return DatabaseType::Sqlite;
+            }
+            return DatabaseType::None;
+        }
+#else
+        if (dynamic_cast<RelationalDBInterfaceSqlite*>(
+                &app_.getRelationalDBInterface()))
+        {
+            return DatabaseType::Sqlite;
+        }
+        return DatabaseType::None;
+#endif
+    }();
+
+    if (databaseType == DatabaseType::None)
+    {
+        JLOG(m_journal.error())
+            << "AccountHistory job for account "
+            << toBase58(subInfo.index_->accountId_) << " no database";
+        if (auto sptr = subInfo.sinkWptr_.lock(); sptr)
+        {
+            sptr->send(rpcError(rpcINTERNAL), true);
+            unsubAccountHistory(sptr, subInfo.index_->accountId_, false);
+        }
+        return;
+    }
+
+    app_.getJobQueue().addJob(
+        jtCLIENT,
+        "AccountHistoryTxStream",
+        [this, dbType = databaseType, subInfo](Job&) {
+            auto const& accountId = subInfo.index_->accountId_;
+            auto& lastLedgerSeq = subInfo.index_->historyLastLedgerSeq_;
+            auto& txHistoryIndex = subInfo.index_->historyTxIndex_;
+
+            JLOG(m_journal.trace())
+                << "AccountHistory job for account " << toBase58(accountId)
+                << " started. lastLedgerSeq=" << lastLedgerSeq;
+
+            auto isFirstTx = [&](std::shared_ptr<Transaction> const& tx,
+                                 std::shared_ptr<TxMeta> const& meta) -> bool {
+                /*
+                 * genesis account: first tx is the one with seq 1
+                 * other account: first tx is the one created the account
+                 */
+                if (accountId == genesisAccountId)
+                {
+                    auto stx = tx->getSTransaction();
+                    if (stx->getAccountID(sfAccount) == accountId &&
+                        stx->getSeqProxy().value() == 1)
+                        return true;
+                }
+
+                for (auto& node : meta->getNodes())
+                {
+                    if (node.getFieldU16(sfLedgerEntryType) != ltACCOUNT_ROOT)
+                        continue;
+
+                    if (node.isFieldPresent(sfNewFields))
+                    {
+                        if (auto inner = dynamic_cast<const STObject*>(
+                                node.peekAtPField(sfNewFields));
+                            inner)
+                        {
+                            if (inner->isFieldPresent(sfAccount) &&
+                                inner->getAccountID(sfAccount) == accountId)
+                            {
+                                return true;
+                            }
+                        }
+                    }
+                }
+
+                return false;
+            };
+
+            auto send = [&](Json::Value const& jvObj,
+                            bool unsubscribe) -> bool {
+                if (auto sptr = subInfo.sinkWptr_.lock(); sptr)
+                {
+                    sptr->send(jvObj, true);
+                    if (unsubscribe)
+                        unsubAccountHistory(sptr, accountId, false);
+                    return true;
+                }
+
+                return false;
+            };
+
+            auto getMoreTxns =
+                [&](std::uint32_t minLedger,
+                    std::uint32_t maxLedger,
+                    std::optional<RelationalDBInterface::AccountTxMarker>
+                        marker)
+                -> std::optional<std::pair<
+                    RelationalDBInterface::AccountTxs,
+                    std::optional<RelationalDBInterface::AccountTxMarker>>> {
+                switch (dbType)
+                {
+                    case Postgres: {
+                        auto db = static_cast<RelationalDBInterfacePostgres*>(
+                            &app_.getRelationalDBInterface());
+                        RelationalDBInterface::AccountTxArgs args;
+                        args.account = accountId;
+                        LedgerRange range{minLedger, maxLedger};
+                        args.ledger = range;
+                        args.marker = marker;
+                        auto [txResult, status] = db->getAccountTx(args);
+                        if (status != rpcSUCCESS)
+                        {
+                            JLOG(m_journal.debug())
+                                << "AccountHistory job for account "
+                                << toBase58(accountId)
+                                << " getAccountTx failed";
+                            return {};
+                        }
+
+                        if (auto txns =
+                                std::get_if<RelationalDBInterface::AccountTxs>(
+                                    &txResult.transactions);
+                            txns)
+                        {
+                            return std::make_pair(*txns, txResult.marker);
+                        }
+                        else
+                        {
+                            JLOG(m_journal.debug())
+                                << "AccountHistory job for account "
+                                << toBase58(accountId)
+                                << " getAccountTx wrong data";
+                            return {};
+                        }
+                    }
+                    case Sqlite: {
+                        auto db = static_cast<RelationalDBInterfaceSqlite*>(
+                            &app_.getRelationalDBInterface());
+                        RelationalDBInterface::AccountTxPageOptions options{
+                            accountId, minLedger, maxLedger, marker, 0, true};
+                        return db->newestAccountTxPage(options);
+                    }
+                    default: {
+                        assert(false);
+                        return {};
+                    }
+                }
+            };
+
+            /*
+             * search backward until the genesis ledger or asked to stop
+             */
+            while (lastLedgerSeq >= 2 && !subInfo.index_->stopHistorical_)
+            {
+                int feeChargeCount = 0;
+                if (auto sptr = subInfo.sinkWptr_.lock(); sptr)
+                {
+                    sptr->getConsumer().charge(Resource::feeMediumBurdenRPC);
+                    ++feeChargeCount;
+                }
+                else
+                {
+                    JLOG(m_journal.trace())
+                        << "AccountHistory job for account "
+                        << toBase58(accountId) << " no InfoSub. Fee charged "
+                        << feeChargeCount << " times.";
+                    return;
+                }
+
+                // try to search in 1024 ledgers till reaching genesis ledgers
+                auto startLedgerSeq =
+                    (lastLedgerSeq > 1024 + 2 ? lastLedgerSeq - 1024 : 2);
+                JLOG(m_journal.trace())
+                    << "AccountHistory job for account " << toBase58(accountId)
+                    << ", working on ledger range [" << startLedgerSeq << ","
+                    << lastLedgerSeq << "]";
+
+                auto haveRange = [&]() -> bool {
+                    std::uint32_t validatedMin = UINT_MAX;
+                    std::uint32_t validatedMax = 0;
+                    auto haveSomeValidatedLedgers =
+                        app_.getLedgerMaster().getValidatedRange(
+                            validatedMin, validatedMax);
+
+                    return haveSomeValidatedLedgers &&
+                        validatedMin <= startLedgerSeq &&
+                        lastLedgerSeq <= validatedMax;
+                }();
+
+                if (!haveRange)
+                {
+                    JLOG(m_journal.debug())
+                        << "AccountHistory reschedule job for account "
+                        << toBase58(accountId) << ", incomplete ledger range ["
+                        << startLedgerSeq << "," << lastLedgerSeq << "]";
+                    setAccountHistoryJobTimer(subInfo);
+                    return;
+                }
+
+                std::optional<RelationalDBInterface::AccountTxMarker> marker{};
+                while (!subInfo.index_->stopHistorical_)
+                {
+                    auto dbResult =
+                        getMoreTxns(startLedgerSeq, lastLedgerSeq, marker);
+                    if (!dbResult)
+                    {
+                        JLOG(m_journal.debug())
+                            << "AccountHistory job for account "
+                            << toBase58(accountId) << " getMoreTxns failed.";
+                        send(rpcError(rpcINTERNAL), true);
+                        return;
+                    }
+
+                    auto const& txns = dbResult->first;
+                    marker = dbResult->second;
+                    for (auto const& [tx, meta] : txns)
+                    {
+                        if (!tx || !meta)
+                        {
+                            JLOG(m_journal.debug())
+                                << "AccountHistory job for account "
+                                << toBase58(accountId) << " empty tx or meta.";
+                            send(rpcError(rpcINTERNAL), true);
+                            return;
+                        }
+                        auto curTxLedger =
+                            app_.getLedgerMaster().getLedgerBySeq(
+                                tx->getLedger());
+                        if (!curTxLedger)
+                        {
+                            JLOG(m_journal.debug())
+                                << "AccountHistory job for account "
+                                << toBase58(accountId) << " no ledger.";
+                            send(rpcError(rpcINTERNAL), true);
+                            return;
+                        }
+                        std::shared_ptr<STTx const> stTxn =
+                            tx->getSTransaction();
+                        if (!stTxn)
+                        {
+                            JLOG(m_journal.debug())
+                                << "AccountHistory job for account "
+                                << toBase58(accountId)
+                                << " getSTransaction failed.";
+                            send(rpcError(rpcINTERNAL), true);
+                            return;
+                        }
+                        Json::Value jvTx = transJson(
+                            *stTxn, meta->getResultTER(), true, curTxLedger);
+                        jvTx[jss::meta] = meta->getJson(JsonOptions::none);
+                        jvTx[jss::account_history_tx_index] = txHistoryIndex--;
+                        RPC::insertDeliveredAmount(
+                            jvTx[jss::meta], *curTxLedger, stTxn, *meta);
+                        if (isFirstTx(tx, meta))
+                        {
+                            jvTx[jss::account_history_tx_first] = true;
+                            send(jvTx, false);
+
+                            JLOG(m_journal.trace())
+                                << "AccountHistory job for account "
+                                << toBase58(accountId)
+                                << " done, found last tx.";
+                            return;
+                        }
+                        else
+                        {
+                            send(jvTx, false);
+                        }
+                    }
+
+                    if (marker)
+                    {
+                        JLOG(m_journal.trace())
+                            << "AccountHistory job for account "
+                            << toBase58(accountId)
+                            << " paging, marker=" << marker->ledgerSeq << ":"
+                            << marker->txnSeq;
+                    }
+                    else
+                    {
+                        break;
+                    }
+                }
+
+                if (!subInfo.index_->stopHistorical_)
+                {
+                    lastLedgerSeq = startLedgerSeq - 1;
+                    if (lastLedgerSeq <= 1)
+                    {
+                        JLOG(m_journal.trace())
+                            << "AccountHistory job for account "
+                            << toBase58(accountId)
+                            << " done, reached genesis ledger.";
+                        return;
+                    }
+                }
+            }
+        });
+}
+
+void
+NetworkOPsImp::subAccountHistoryStart(
+    std::shared_ptr<ReadView const> const& ledger,
+    SubAccountHistoryInfoWeak& subInfo)
+{
+    subInfo.index_->separationLedgerSeq_ = ledger->seq();
+    auto const& accountId = subInfo.index_->accountId_;
+    auto const accountKeylet = keylet::account(accountId);
+    if (!ledger->exists(accountKeylet))
+    {
+        JLOG(m_journal.debug())
+            << "subAccountHistoryStart, no account " << toBase58(accountId)
+            << ", no need to add AccountHistory job.";
+        return;
+    }
+    if (accountId == genesisAccountId)
+    {
+        if (auto const sleAcct = ledger->read(accountKeylet); sleAcct)
+        {
+            if (sleAcct->getFieldU32(sfSequence) == 1)
+            {
+                JLOG(m_journal.debug())
+                    << "subAccountHistoryStart, genesis account "
+                    << toBase58(accountId)
+                    << " does not have tx, no need to add AccountHistory job.";
+                return;
+            }
+        }
+        else
+        {
+            assert(false);
+            return;
+        }
+    }
+    subInfo.index_->historyLastLedgerSeq_ = ledger->seq();
+    subInfo.index_->haveHistorical_ = true;
+
+    JLOG(m_journal.debug())
+        << "subAccountHistoryStart, add AccountHistory job: accountId="
+        << toBase58(accountId) << ", currentLedgerSeq=" << ledger->seq();
+
+    addAccountHistoryJob(subInfo);
+}
+
+error_code_i
+NetworkOPsImp::subAccountHistory(
+    InfoSub::ref isrListener,
+    AccountID const& accountId)
+{
+    if (!isrListener->insertSubAccountHistory(accountId))
+    {
+        JLOG(m_journal.debug())
+            << "subAccountHistory, already subscribed to account "
+            << toBase58(accountId);
+        return rpcINVALID_PARAMS;
+    }
+
+    std::lock_guard sl(mSubLock);
+    SubAccountHistoryInfoWeak ahi{
+        isrListener, std::make_shared<SubAccountHistoryIndex>(accountId)};
+    auto simIterator = mSubAccountHistory.find(accountId);
+    if (simIterator == mSubAccountHistory.end())
+    {
+        hash_map<std::uint64_t, SubAccountHistoryInfoWeak> inner;
+        inner.emplace(isrListener->getSeq(), ahi);
+        mSubAccountHistory.insert(
+            simIterator, std::make_pair(accountId, inner));
+    }
+    else
+    {
+        simIterator->second.emplace(isrListener->getSeq(), ahi);
+    }
+
+    auto const ledger = app_.getLedgerMaster().getValidatedLedger();
+    if (ledger)
+    {
+        subAccountHistoryStart(ledger, ahi);
+    }
+    else
+    {
+        // The node does not have validated ledgers, so wait for
+        // one before start streaming.
+        // In this case, the subscription is also considered successful.
+        JLOG(m_journal.debug())
+            << "subAccountHistory, no validated ledger yet, delay start";
+    }
+
+    return rpcSUCCESS;
+}
+
+void
+NetworkOPsImp::unsubAccountHistory(
+    InfoSub::ref isrListener,
+    AccountID const& account,
+    bool historyOnly)
+{
+    if (!historyOnly)
+        isrListener->deleteSubAccountHistory(account);
+    unsubAccountHistoryInternal(isrListener->getSeq(), account, historyOnly);
+}
+
+void
+NetworkOPsImp::unsubAccountHistoryInternal(
+    std::uint64_t seq,
+    const AccountID& account,
+    bool historyOnly)
+{
+    std::lock_guard sl(mSubLock);
+    auto simIterator = mSubAccountHistory.find(account);
+    if (simIterator != mSubAccountHistory.end())
+    {
+        auto& subInfoMap = simIterator->second;
+        auto subInfoIter = subInfoMap.find(seq);
+        if (subInfoIter != subInfoMap.end())
+        {
+            subInfoIter->second.index_->stopHistorical_ = true;
+        }
+
+        if (!historyOnly)
+        {
+            simIterator->second.erase(seq);
+            if (simIterator->second.empty())
+            {
+                mSubAccountHistory.erase(simIterator);
+            }
+        }
+        JLOG(m_journal.debug())
+            << "unsubAccountHistory, account " << toBase58(account)
+            << ", historyOnly = " << (historyOnly ? "true" : "false");
+    }
+}
+
 bool
 NetworkOPsImp::subBook(InfoSub::ref isrListener, Book const& book)
 {
@@ -3254,7 +3762,7 @@ NetworkOPsImp::unsubBook(std::uint64_t uSeq, Book const& book)
 
 std::uint32_t
 NetworkOPsImp::acceptLedger(
-    boost::optional<std::chrono::milliseconds> consensusDelay)
+    std::optional<std::chrono::milliseconds> consensusDelay)
 {
     // This code-path is exclusively used when the server is in standalone
     // mode via `ledger_accept`
@@ -3568,13 +4076,7 @@ NetworkOPsImp::getBookPage(
                 uTipIndex = sleOfferDir->key();
                 saDirRate = amountFromQuality(getQuality(uTipIndex));
 
-                cdirFirst(
-                    view,
-                    uTipIndex,
-                    sleOfferDir,
-                    uBookEntry,
-                    offerIndex,
-                    viewJ);
+                cdirFirst(view, uTipIndex, sleOfferDir, uBookEntry, offerIndex);
 
                 JLOG(m_journal.trace())
                     << "getBookPage:   uTipIndex=" << uTipIndex;
@@ -3694,13 +4196,7 @@ NetworkOPsImp::getBookPage(
                 JLOG(m_journal.warn()) << "Missing offer";
             }
 
-            if (!cdirNext(
-                    view,
-                    uTipIndex,
-                    sleOfferDir,
-                    uBookEntry,
-                    offerIndex,
-                    viewJ))
+            if (!cdirNext(view, uTipIndex, sleOfferDir, uBookEntry, offerIndex))
             {
                 bDirectAdvance = true;
             }
@@ -3854,14 +4350,43 @@ NetworkOPsImp::getBookPage(
 
 #endif
 
-//------------------------------------------------------------------------------
-
-NetworkOPs::NetworkOPs(Stoppable& parent)
-    : InfoSub::Source("NetworkOPs", parent)
+inline void
+NetworkOPsImp::collect_metrics()
 {
-}
+    auto [counters, mode, start] = accounting_.getCounterData();
+    auto const current = std::chrono::duration_cast<std::chrono::microseconds>(
+        std::chrono::system_clock::now() - start);
+    counters[static_cast<std::size_t>(mode)].dur += current;
 
-//------------------------------------------------------------------------------
+    std::lock_guard lock(m_statsMutex);
+    m_stats.disconnected_duration.set(
+        counters[static_cast<std::size_t>(OperatingMode::DISCONNECTED)]
+            .dur.count());
+    m_stats.connected_duration.set(
+        counters[static_cast<std::size_t>(OperatingMode::CONNECTED)]
+            .dur.count());
+    m_stats.syncing_duration.set(
+        counters[static_cast<std::size_t>(OperatingMode::SYNCING)].dur.count());
+    m_stats.tracking_duration.set(
+        counters[static_cast<std::size_t>(OperatingMode::TRACKING)]
+            .dur.count());
+    m_stats.full_duration.set(
+        counters[static_cast<std::size_t>(OperatingMode::FULL)].dur.count());
+
+    m_stats.disconnected_transitions.set(
+        counters[static_cast<std::size_t>(OperatingMode::DISCONNECTED)]
+            .transitions);
+    m_stats.connected_transitions.set(
+        counters[static_cast<std::size_t>(OperatingMode::CONNECTED)]
+            .transitions);
+    m_stats.syncing_transitions.set(
+        counters[static_cast<std::size_t>(OperatingMode::SYNCING)].transitions);
+    m_stats.tracking_transitions.set(
+        counters[static_cast<std::size_t>(OperatingMode::TRACKING)]
+            .transitions);
+    m_stats.full_transitions.set(
+        counters[static_cast<std::size_t>(OperatingMode::FULL)].transitions);
+}
 
 void
 NetworkOPsImp::StateAccounting::mode(OperatingMode om)
@@ -3911,7 +4436,6 @@ make_NetworkOPs(
     bool startvalid,
     JobQueue& job_queue,
     LedgerMaster& ledgerMaster,
-    Stoppable& parent,
     ValidatorKeys const& validatorKeys,
     boost::asio::io_service& io_svc,
     beast::Journal journal,
@@ -3925,7 +4449,6 @@ make_NetworkOPs(
         startvalid,
         job_queue,
         ledgerMaster,
-        parent,
         validatorKeys,
         io_svc,
         journal,

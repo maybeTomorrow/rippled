@@ -162,6 +162,12 @@ closeChannel(
 
 //------------------------------------------------------------------------------
 
+TxConsequences
+PayChanCreate::makeTxConsequences(PreflightContext const& ctx)
+{
+    return TxConsequences{ctx.tx, ctx.tx[sfAmount].xrp()};
+}
+
 NotTEC
 PayChanCreate::preflight(PreflightContext const& ctx)
 {
@@ -236,9 +242,14 @@ PayChanCreate::doApply()
 
     auto const dst = ctx_.tx[sfDestination];
 
-    // Create PayChan in ledger
-    auto const slep = std::make_shared<SLE>(
-        keylet::payChan(account, dst, (*sle)[sfSequence] - 1));
+    // Create PayChan in ledger.
+    //
+    // Note that we we use the value from the sequence or ticket as the
+    // payChan sequence.  For more explanation see comments in SeqProxy.h.
+    Keylet const payChanKeylet =
+        keylet::payChan(account, dst, ctx_.tx.getSeqProxy().value());
+    auto const slep = std::make_shared<SLE>(payChanKeylet);
+
     // Funds held in this channel
     (*slep)[sfAmount] = ctx_.tx[sfAmount];
     // Amount channel has already paid
@@ -255,13 +266,10 @@ PayChanCreate::doApply()
 
     // Add PayChan to owner directory
     {
-        auto const page = dirAdd(
-            ctx_.view(),
+        auto const page = ctx_.view().dirInsert(
             keylet::ownerDir(account),
-            slep->key(),
-            false,
-            describeOwnerDir(account),
-            ctx_.app.journal("View"));
+            payChanKeylet,
+            describeOwnerDir(account));
         if (!page)
             return tecDIR_FULL;
         (*slep)[sfOwnerNode] = *page;
@@ -270,13 +278,8 @@ PayChanCreate::doApply()
     // Add PayChan to the recipient's owner directory
     if (ctx_.view().rules().enabled(fixPayChanRecipientOwnerDir))
     {
-        auto const page = dirAdd(
-            ctx_.view(),
-            keylet::ownerDir(dst),
-            slep->key(),
-            false,
-            describeOwnerDir(dst),
-            ctx_.app.journal("View"));
+        auto const page = ctx_.view().dirInsert(
+            keylet::ownerDir(dst), payChanKeylet, describeOwnerDir(dst));
         if (!page)
             return tecDIR_FULL;
         (*slep)[sfDestinationNode] = *page;
@@ -291,6 +294,12 @@ PayChanCreate::doApply()
 }
 
 //------------------------------------------------------------------------------
+
+TxConsequences
+PayChanFund::makeTxConsequences(PreflightContext const& ctx)
+{
+    return TxConsequences{ctx.tx, ctx.tx[sfAmount].xrp()};
+}
 
 NotTEC
 PayChanFund::preflight(PreflightContext const& ctx)
@@ -311,7 +320,7 @@ PayChanFund::preflight(PreflightContext const& ctx)
 TER
 PayChanFund::doApply()
 {
-    Keylet const k(ltPAYCHAN, ctx_.tx[sfPayChannel]);
+    Keylet const k(ltPAYCHAN, ctx_.tx[sfChannel]);
     auto const slep = ctx_.view().peek(k);
     if (!slep)
         return tecNO_ENTRY;
@@ -426,9 +435,10 @@ PayChanClaim::preflight(PreflightContext const& ctx)
         if (reqBalance > authAmt)
             return temBAD_AMOUNT;
 
-        Keylet const k(ltPAYCHAN, ctx.tx[sfPayChannel]);
+        Keylet const k(ltPAYCHAN, ctx.tx[sfChannel]);
         if (!publicKeyType(ctx.tx[sfPublicKey]))
             return temMALFORMED;
+
         PublicKey const pk(ctx.tx[sfPublicKey]);
         Serializer msg;
         serializePayChanAuthorization(msg, k.key, authAmt);
@@ -442,7 +452,7 @@ PayChanClaim::preflight(PreflightContext const& ctx)
 TER
 PayChanClaim::doApply()
 {
-    Keylet const k(ltPAYCHAN, ctx_.tx[sfPayChannel]);
+    Keylet const k(ltPAYCHAN, ctx_.tx[sfChannel]);
     auto const slep = ctx_.view().peek(k);
     if (!slep)
         return tecNO_TARGET;
@@ -525,7 +535,7 @@ PayChanClaim::doApply()
     {
         if (src != txAccount)
             return tecNO_PERMISSION;
-        (*slep)[~sfExpiration] = boost::none;
+        (*slep)[~sfExpiration] = std::nullopt;
         ctx_.view().update(slep);
     }
 

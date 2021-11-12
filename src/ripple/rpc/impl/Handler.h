@@ -55,7 +55,7 @@ struct Handler
 };
 
 Handler const*
-getHandler(unsigned int version, std::string const&);
+getHandler(unsigned int version, bool betaEnabled, std::string const&);
 
 /** Return a Json::objectValue with a single entry. */
 template <class Value>
@@ -77,6 +77,36 @@ template <class T>
 error_code_i
 conditionMet(Condition condition_required, T& context)
 {
+    if (context.app.config().reporting())
+    {
+        if (condition_required == NEEDS_CURRENT_LEDGER)
+        {
+            return rpcNO_CURRENT;
+        }
+        else if (condition_required == NEEDS_CLOSED_LEDGER)
+        {
+            return rpcNO_CLOSED;
+        }
+        else
+        {
+            return rpcSUCCESS;
+        }
+    }
+
+    if (context.app.getOPs().isAmendmentBlocked() &&
+        (condition_required & NEEDS_CURRENT_LEDGER ||
+         condition_required & NEEDS_CLOSED_LEDGER))
+    {
+        return rpcAMENDMENT_BLOCKED;
+    }
+
+    if (context.app.getOPs().isUNLBlocked() &&
+        (condition_required & NEEDS_CURRENT_LEDGER ||
+         condition_required & NEEDS_CLOSED_LEDGER))
+    {
+        return rpcEXPIRED_VALIDATOR_LIST;
+    }
+
     if ((condition_required & NEEDS_NETWORK_CONNECTION) &&
         (context.netOps.getOperatingMode() < OperatingMode::SYNCING))
     {
@@ -86,13 +116,6 @@ conditionMet(Condition condition_required, T& context)
         if (context.apiVersion == 1)
             return rpcNO_NETWORK;
         return rpcNOT_SYNCED;
-    }
-
-    if (context.app.getOPs().isAmendmentBlocked() &&
-        (condition_required & NEEDS_CURRENT_LEDGER ||
-         condition_required & NEEDS_CLOSED_LEDGER))
-    {
-        return rpcAMENDMENT_BLOCKED;
     }
 
     if (!context.app.config().standalone() &&

@@ -21,9 +21,7 @@ services:
   - docker
 
 stages:
-  - windep-ssl
-  - windep-grpc
-  - windep-libarchive
+  - windep-vcpkg
   - windep-boost
   - build
 
@@ -38,7 +36,7 @@ env:
     - NIH_CACHE_ROOT=${CACHE_DIR}/nih_c
     - PARALLEL_TESTS=true
     # this is NOT used by linux container based builds (which already have boost installed)
-    - BOOST_URL='https://dl.bintray.com/boostorg/release/1.70.0/source/boost_1_70_0.tar.bz2'
+    - BOOST_URL='https://boostorg.jfrog.io/artifactory/main/release/1.70.0/source/boost_1_70_0.tar.gz'
     # Alternate dowload location
     - BOOST_URL2='https://downloads.sourceforge.net/project/boost/boost/1.70.0/boost_1_70_0.tar.bz2?r=&amp;ts=1594393912&amp;use_mirror=newcontinuum'
     # Travis downloader doesn't seem to have updated certs. Using this option
@@ -50,6 +48,14 @@ env:
     - CCACHE_BASEDIR=${TRAVIS_HOME}"
     - CCACHE_NOHASHDIR=true
     - CCACHE_DIR=${CACHE_DIR}/ccache
+
+before_install:
+  - export NUM_PROCESSORS=$(nproc)
+  - echo "NUM PROC is ${NUM_PROCESSORS}"
+  - if [ "$(uname)" = "Linux" ] ; then docker pull ${DOCKER_IMAGE}; fi
+  - if [ "${MATRIX_EVAL}" != "" ] ; then eval "${MATRIX_EVAL}"; fi
+  - if [ "${CMAKE_ADD}" != "" ] ; then export CMAKE_EXTRA_ARGS="${CMAKE_EXTRA_ARGS} ${CMAKE_ADD}"; fi
+  - bin/ci/ubuntu/travis-cache-start.sh
 
 matrix:
   fast_finish: true
@@ -64,11 +70,10 @@ matrix:
     # allow the rest of the builds to continue. They may succeed if the
     # dependency is already cached. These do not need to be retried if
     # _any_ of the Windows builds succeed.
-    - stage: windep-ssl
-    - stage: windep-grpc
-    - stage: windep-libarchive
+    - stage: windep-vcpkg
     - stage: windep-boost
 
+  # https://docs.travis-ci.com/user/build-config-yaml#usage-of-yaml-anchors-and-aliases
   include:
     # debug builds
     - &linux
@@ -90,6 +95,13 @@ matrix:
       env:
         - MATRIX_EVAL="CC=clang-8 && CXX=clang++-8"
         - BUILD_TYPE=Debug
+    - <<: *linux
+      compiler: clang-8
+      name: reporting, clang-8, debug
+      env:
+        - MATRIX_EVAL="CC=clang-8 && CXX=clang++-8"
+        - BUILD_TYPE=Debug
+        - CMAKE_ADD="-Dreporting=ON"
     # coverage builds
     - <<: *linux
       if: commit_message !~ /travis_run_/ OR commit_message =~ /travis_run_linux/ OR commit_message =~ /travis_run_cov/
@@ -110,6 +122,25 @@ matrix:
         - BUILD_TYPE=Debug
         - CMAKE_ADD="-Dcoverage=ON"
         - TARGET=coverage_report
+        - SKIP_TESTS=true
+    # test-free builds
+    - <<: *linux
+      if: commit_message !~ /travis_run_/ OR commit_message =~ /travis_run_linux/
+      compiler: gcc-8
+      name: no-tests-unity, gcc-8
+      env:
+        - MATRIX_EVAL="CC=gcc-8 && CXX=g++-8"
+        - BUILD_TYPE=Debug
+        - CMAKE_ADD="-Dtests=OFF"
+        - SKIP_TESTS=true
+    - <<: *linux
+      if: commit_message !~ /travis_run_/ OR commit_message =~ /travis_run_linux/
+      compiler: clang-8
+      name: no-tests-non-unity, clang-8
+      env:
+        - MATRIX_EVAL="CC=clang-8 && CXX=clang++-8"
+        - BUILD_TYPE=Debug
+        - CMAKE_ADD="-Dtests=OFF -Dunity=OFF"
         - SKIP_TESTS=true
     # nounity
     - <<: *linux
@@ -227,29 +258,23 @@ matrix:
         - NINJA_BUILD=false
     # misc alternative compilers
     - <<: *linux
-      compiler: gcc-7
-      name: gcc-7
-      env:
-        - MATRIX_EVAL="CC=gcc-7 && CXX=g++-7"
-        - BUILD_TYPE=Debug
-    - <<: *linux
       compiler: gcc-9
       name: gcc-9
       env:
         - MATRIX_EVAL="CC=gcc-9 && CXX=g++-9"
         - BUILD_TYPE=Debug
     - <<: *linux
-      compiler: clang-7
-      name: clang-7
-      env:
-        - MATRIX_EVAL="CC=clang-7 && CXX=clang++-7"
-        - BUILD_TYPE=Debug
-    - <<: *linux
       compiler: clang-9
-      name: clang-9
+      name: clang-9, debug
       env:
         - MATRIX_EVAL="CC=clang-9 && CXX=clang++-9"
         - BUILD_TYPE=Debug
+    - <<: *linux
+      compiler: clang-9
+      name: clang-9, release
+      env:
+        - MATRIX_EVAL="CC=clang-9 && CXX=clang++-9"
+        - BUILD_TYPE=Release
     # verify build with min version of cmake
     - <<: *linux
       compiler: gcc-8
@@ -274,8 +299,8 @@ matrix:
       if: commit_message !~ /travis_run_/ OR commit_message =~ /travis_run_mac/
       stage: build
       os: osx
-      osx_image: xcode10.3
-      name: xcode10, debug
+      osx_image: xcode11.2
+      name: xcode11.2, debug
       env:
         # put NIH in non-cache location since it seems to
         # cause failures when homebrew updates
@@ -313,7 +338,7 @@ matrix:
         - travis_wait ${MAX_TIME_MIN} cmake --build . --parallel --verbose
         - ./rippled --unittest --quiet --unittest-log --unittest-jobs ${NUM_PROCESSORS} ${TEST_EXTRA_ARGS}
     - <<: *macos
-      name: xcode10, release
+      name: xcode11.2, release
       before_script:
         - export BLD_CONFIG=Release
         - export CMAKE_EXTRA_ARGS="${CMAKE_EXTRA_ARGS} -Dassert=ON"
@@ -323,7 +348,7 @@ matrix:
         - export TEST_EXTRA_ARGS="--unittest-ipv6"
     - <<: *macos
       osx_image: xcode11.2
-      name: xcode11, debug
+      name: xcode11.2, debug
     # windows
     - &windows
       if: commit_message !~ /travis_run_/ OR commit_message =~ /travis_run_win/
@@ -347,30 +372,23 @@ matrix:
           -DCMAKE_VERBOSE_MAKEFILE=ON
           -DCMAKE_TOOLCHAIN_FILE=${VCPKG_DIR}/scripts/buildsystems/vcpkg.cmake
           -DVCPKG_TARGET_TRIPLET=x64-windows-static"
-      stage: windep-ssl
-      name: prereq-ssl
+      stage: windep-vcpkg
+      name: prereq-vcpkg
       install:
         - choco upgrade cmake.install
         - choco install ninja visualstudio2017-workload-vctools -y
       script:
         - df -h
+        - env
         - travis_wait ${MAX_TIME_MIN} bin/sh/install-vcpkg.sh openssl
-    - <<: *windows
-      stage: windep-grpc
-      name: prereq-grpc
-      script:
         - travis_wait ${MAX_TIME_MIN} bin/sh/install-vcpkg.sh grpc
-    - <<: *windows
-      stage: windep-libarchive
-      name: prereq-libarchive
-      script:
         - travis_wait ${MAX_TIME_MIN} bin/sh/install-vcpkg.sh libarchive[lz4]
         # TBD consider rocksdb via vcpkg if/when we can build with the
         # vcpkg version
         # - travis_wait ${MAX_TIME_MIN} bin/sh/install-vcpkg.sh rocksdb[snappy,lz4,zlib]
     - <<: *windows
       stage: windep-boost
-      name: prereq-boost
+      name: prereq-keep-boost
       install:
         - choco upgrade cmake.install
         - choco install ninja visualstudio2017-workload-vctools -y
@@ -390,8 +408,8 @@ matrix:
         - mkdir -p build.ms && cd build.ms
         - cmake -G Ninja ${CMAKE_EXTRA_ARGS} -DCMAKE_BUILD_TYPE=${BLD_CONFIG} ..
         - travis_wait ${MAX_TIME_MIN} cmake --build . --parallel --verbose
-        # override num procs to force single unit test job
-        - export NUM_PROCESSORS=1
+        # override num procs to force fewer unit test jobs
+        - export NUM_PROCESSORS=2
         - travis_wait ${MAX_TIME_MIN} ./rippled.exe --unittest --quiet --unittest-log --unittest-jobs ${NUM_PROCESSORS}
     - <<: *windows-bld
       name: windows, release
@@ -401,11 +419,12 @@ matrix:
       name: windows, visual studio, debug
       script:
         - mkdir -p build.ms && cd build.ms
+        - export CMAKE_EXTRA_ARGS="${CMAKE_EXTRA_ARGS} -DCMAKE_GENERATOR_TOOLSET=host=x64"
         - cmake -G "Visual Studio 15 2017 Win64" ${CMAKE_EXTRA_ARGS} ..
         - export DESTDIR=${PWD}/_installed_
         - travis_wait ${MAX_TIME_MIN} cmake --build . --parallel --verbose --config ${BLD_CONFIG} --target install
-        # override num procs to force single unit test job
-        - export NUM_PROCESSORS=1
+        # override num procs to force fewer unit test jobs
+        - export NUM_PROCESSORS=2
         - >-
           travis_wait ${MAX_TIME_MIN} "./_installed_/Program Files/rippled/bin/rippled.exe" --unittest --quiet --unittest-log --unittest-jobs ${NUM_PROCESSORS}
     - <<: *windows-bld
@@ -437,15 +456,5 @@ cache:
   directories:
     - $CACHE_DIR
 
-before_install:
-  # NUM_PROCESSORS was set to 1 due to problems in parallel launch of unit tests on Mac platform
-  - if [ "$(uname)" = "Darwin" ] ; then export NUM_PROCESSORS=1; else export NUM_PROCESSORS=$(nproc); fi
-  - echo "NUM PROC is ${NUM_PROCESSORS}"
-  - if [ "$(uname)" = "Linux" ] ; then docker pull ${DOCKER_IMAGE}; fi
-  - if [ "${MATRIX_EVAL}" != "" ] ; then eval "${MATRIX_EVAL}"; fi
-  - if [ "${CMAKE_ADD}" != "" ] ; then export CMAKE_EXTRA_ARGS="${CMAKE_EXTRA_ARGS} ${CMAKE_ADD}"; fi
-  - bin/ci/ubuntu/travis-cache-start.sh
-
 notifications:
   email: false
-

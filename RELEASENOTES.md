@@ -2,17 +2,129 @@
 
 ![XRP](docs/images/xrp-text-mark-black-small@2x.png)
 
-This document contains the release notes for `rippled`, the reference server implementation of the Ripple protocol. To learn more about how to build, run or update a `rippled` server, visit https://xrpl.org/install-rippled.html
+This document contains the release notes for `rippled`, the reference server implementation of the XRP Ledger protocol. To learn more about how to build, run or update a `rippled` server, visit https://xrpl.org/install-rippled.html
 
  
 Have new ideas? Need help with setting up your node? Come visit us [here](https://github.com/ripple/rippled/issues/new/choose)
 
-# Change Log
+# Change log
 
-- Work on a version 2 of the XRP Network API has begun.  The new API returns the code `notSynced` in place of `noClosed`, `noCurrent`, and `noNetwork`.  And `invalidLgrRange` is returned in place of `lgrIdxInvalid`.
-- The version 2 API can be specified by adding "api_version" : 2 to your json request.  The default version remains 1 (if unspecified), except for the command line interface which always uses the latest verison.
+- API version 2 will now return `signer_lists` in the root of the `account_info` response, no longer nested under `account_data`.
 
 # Releases
+
+## Version 1.7.3
+
+This is the 1.7.3 release of `rippled`, the reference implementation of the XRP Ledger protocol. This release addresses an OOB memory read identified by Guido Vranken, as well as an unrelated issue identified by the Ripple C++ team that could result in incorrect use of SLEs. Additionally, this version also introduces the `NegativeUNL` amendment, which corresponds to the feature which was introduced with the 1.6.0 release.
+
+## Action Required
+
+If you operate an XRP Ledger server, then you should upgrade to version 1.7.3 at your earliest convenience to mitigate the issues addressed in this hotfix. If a sufficient majority of servers on the network upgrade, the `NegativeUNL` amendment may gain a majority, at which point a two week activation countdown will begin. If the `NegativeUNL` amendment activates, servers running versions of `rippled` prior to 1.7.3 will become [amendment blocked](https://xrpl.org/amendments.html#amendment-blocked).
+
+### Bug Fixes
+
+- **Improve SLE usage in check cashing**: Fixes a situation which could result in the incorrect use of SLEs.
+- **Address OOB in base58 decoder**: Corrects a technical flaw that could allow an out-of-bounds memory read in the Base58 decoder.
+- **Add `NegativeUNL` as a supported amendment**: Introduces an amendment for the Negative UNL feature introduced in `rippled` 1.6.0.
+
+## Version 1.7.2
+
+This the 1.7.2 release of rippled, the reference server implementation of the XRP Ledger protocol. This release protects against the security issue [CVE-2021-3499](https://www.openssl.org/news/secadv/20210325.txt) affecting OpenSSL, adds an amendment to fix an issue with small offers not being properly removed from order books in some cases, and includes various other minor fixes.
+Version 1.7.2 supersedes version 1.7.1 and adds fixes for more issues that were discovered during the release cycle.
+
+## Action Required
+
+This release introduces a new amendment to the XRP Ledger protocol: `fixRmSmallIncreasedQOffers`. This amendments is now open for voting according to the XRP Ledger's amendment process, which enables protocol changes following two weeks of >80% support from trusted validators.
+If you operate an XRP Ledger server, then you should upgrade to version 1.7.2 within two weeks, to ensure service continuity. The exact time that protocol changes take effect depends on the voting decisions of the decentralized network.
+If you operate an XRP Ledger validator, please learn more about this amendment so you can make informed decisions about how your validator votes. If you take no action, your validator begins voting in favor of any new amendments as soon as it has been upgraded. 
+
+### Bug Fixes
+
+- **fixRmSmallIncreasedQOffers Amendment:** This amendment fixes an issue where certain small offers can be left at the tip of an order book without being consumed or removed when appropriate and causes some payments and Offers to fail when they should have succeeded [(#3827)](https://github.com/ripple/rippled/pull/3827).
+- **Adjust OpenSSL defaults and mitigate CVE-2021-3499:** Prior to this fix, servers compiled against a vulnerable version of OpenSSL could have a crash triggered by a malicious network connection. This fix disables renegotiation support in OpenSSL so that the rippled server is not vulnerable to this bug regardless of the OpenSSL version used to compile the server. This also removes support for deprecated TLS versions 1.0 and 1.1 and ciphers that are not part of TLS 1.2 [(#79e69da)](https://github.com/ripple/rippled/pull/3843/commits/79e69da3647019840dca49622621c3d88bc3883f).
+- **Support HTTP health check in reporting mode:** Enables the Health Check special method when running the server in the new Reporting Mode introduced in 1.7.0 [(9c8cadd)](https://github.com/ripple/rippled/pull/3843/commits/9c8caddc5a197bdd642556f8beb14f06d53cdfd3).
+- **Maintain compatibility for forwarded RPC responses:** Fixes a case in API responses from servers in Reporting Mode, where requests that were forwarded to a P2P-mode server would have the result field nested inside another result field [(8579eb0)](https://github.com/ripple/rippled/pull/3843/commits/8579eb0c191005022dcb20641444ab471e277f67).
+- **Add load_factor in reporting mode:** Adds a load_factor value to the server info method response when running the server in Reporting Mode so that the response is compatible with the format returned by servers in P2P mode (the default) [(430802c)](https://github.com/ripple/rippled/pull/3843/commits/430802c1cf6d4179f2249a30bfab9eff8e1fa748).
+- **Properly encode metadata from tx RPC command:** Fixes a problem where transaction metadata in the tx API method response would be in JSON format even when binary was requested [(7311629)](https://github.com/ripple/rippled/pull/3843/commits/73116297aa94c4acbfc74c2593d1aa2323b4cc52).
+- **Updates to Windows builds:** When building on Windows, use vcpkg 2021 by default and add compatibility with MSVC 2019 [(36fe196)](https://github.com/ripple/rippled/pull/3843/commits/36fe1966c3cd37f668693b5d9910fab59c3f8b1f), [(30fd458)](https://github.com/ripple/rippled/pull/3843/commits/30fd45890b1d3d5f372a2091d1397b1e8e29d2ca).
+
+## Version 1.7.0 
+
+Ripple has released version 1.7.0 of `rippled`, the reference server implementation of the XRP Ledger protocol. 
+This release [significantly improves memory usage](https://blog.ripplex.io/how-ripples-c-team-cut-rippleds-memory-footprint-down-to-size/), introduces a protocol amendment to allow out-of-order transaction execution with Tickets, and brings several other features and improvements. 
+
+## Upgrading (SPECIAL ACTION REQUIRED)
+If you use the precompiled binaries of rippled that Ripple publishes for supported platforms, please note that Ripple has renewed the GPG key used to sign these packages. 
+If you are upgrading from a previous install, you must download and trust the renewed key. Automatic upgrades will not work until you have re-trusted the key.
+### Red Hat Enterprise Linux / CentOS
+
+Perform a [manual upgrade](https://xrpl.org/update-rippled-manually-on-centos-rhel.html). When prompted, confirm that the key's fingerprint matches the following example, then press `y` to accept the updated key:
+
+```
+$ sudo yum install rippled
+Loaded plugins: fastestmirror
+Loading mirror speeds from cached hostfile
+* base: mirror.web-ster.com
+* epel: mirrors.syringanetworks.net
+* extras: ftp.osuosl.org
+* updates: mirrors.vcea.wsu.edu
+ripple-nightly/signature                                                                                                                                                                                                                                 |  650 B  00:00:00    
+Retrieving key from https://repos.ripple.com/repos/rippled-rpm/nightly/repodata/repomd.xml.key
+Importing GPG key 0xCCAFD9A2:
+Userid     : "TechOps Team at Ripple <techops+rippled@ripple.com>"
+Fingerprint: c001 0ec2 05b3 5a33 10dc 90de 395f 97ff ccaf d9a2
+From       : https://repos.ripple.com/repos/rippled-rpm/nightly/repodata/repomd.xml.key
+Is this ok [y/N]: y
+```
+
+### Ubuntu / Debian
+
+Download and trust the updated public key, then perform a [manual upgrade](https://xrpl.org/update-rippled-manually-on-ubuntu.html) as follows:
+
+```
+wget -q -O - "https://repos.ripple.com/repos/api/gpg/key/public" | \
+    sudo apt-key add -
+sudo apt -y update
+sudo apt -y install rippled
+```
+
+### New and Improved Features
+
+- **Rework deferred node logic and async fetch behavior:** This change significantly improves ledger sync and fetch times while reducing memory consumption.  (https://blog.ripplex.io/how-ripples-c-team-cut-rippleds-memory-footprint-down-to-size/)
+- **New Ticket feature:** Tickets are a mechanism to prepare and send certain transactions outside of the normal sequence order. This version reworks and completes the implementation for Tickets after more than 6 years of development. This feature is now open for voting as the newly-introduced `TicketBatch` amendment, which replaces the previously-proposed `Tickets` amendment. The specification for this change can be found at: [xrp-community/standards-drafts#16](https://github.com/xrp-community/standards-drafts/issues/16)
+- **Add Reporting Mode:** The server can be compiled to operate in a new mode that serves API requests for validated ledger data without connecting directly to the peer-to-peer network. (The server needs a gRPC connection to another server that is on the peer-to-peer network.) Reporting Mode servers can share access to ledger data via Apache Cassandra and PostgreSQL to more efficiently serve API requests while peer-to-peer servers specialize in broadcasting and processing transactions.
+- **Optimize relaying of validation and proposal messages:** Servers typically receive multiple copies of any given message from directly connected peers; in particular, consensus proposal and validation messages are often relayed with extremely high redundancy. For servers with several peers, this can cause redundant work. This commit introduces experimental code that attempts to optimize the relaying of proposals and validations by allowing servers to instruct their peers to "squelch" delivery of selected proposals and validations. This change is considered experimental at this time and is disabled by default because the functioning of the consensus network depends on messages propagating with high reliability through the constantly-changing peer-to-peer network. Server operators who wish to test the optimized code can enable it in their server config file.
+- **Report server domain to other servers:** Server operators now have the option to configure a domain name to be associated with their servers. The value is communicated to other servers and is also reported via the `server_info` API. The value is meant for third-party applications and tools to group servers together. For example, a tool that visualizes the network's topology can show how many servers are operated by different stakeholders. An operator can claim any domain, so tools should use the [xrp-ledger.toml file](https://xrpl.org/xrp-ledger-toml.html) to confirm that the domain also claims ownership of the servers.
+- **Improve handling of peers that aren't synced:** When evaluating the fitness and usefulness of an outbound peer, the code would incorrectly calculate the amount of time that the peer spent in a non-useful state. This release fixes the calculation and makes the timeout values configurable by server operators. Two new options are introduced in the 'overlay' stanza of the config file. 
+- **Persist API-configured voting settings:** Previously, the amendments that a server would vote in support of or against could be configured both via the configuration file and via the ["feature" API method](https://xrpl.org/feature.html). Changes made in the configuration file were only loaded at server startup; changes made via the command line take effect immediately but were not persisted across restarts. Starting with this release, changes made via the API are saved to the wallet.db database file so that they persist even if the server is restarted.
+Amendment voting in the config file is deprecated. The first time the server starts with v1.7.0 or higher, it reads any amendment voting settings in the config file and saves the settings to the database; on later restarts the server prints a warning message and ignores the [amendments] and [veto_amendments] stanzas of the config file.
+Going forward, use the [feature method](https://xrpl.org/feature.html) to view and configure amendment votes. If you want to use the config file to configure amendment votes, add a line to the [rpc_startup] stanza such as the following:
+[rpc_startup]
+{ "command": "feature", "feature": "FlowSortStrands", "vetoed": true }
+- **Support UNLs with future effective dates:** Updates the format for the recommended validator list file format, allowing publishers to pre-publish the next recommended UNL while the current one is still valid. The server is still backwards compatible with the previous format, but the new format removes some uncertainty during the transition from one list to the next. Also, starting with this release, the server locks down and reports an error if it has no valid validator list. You can clear the error by loading a validator list from a file or by configuring a different UNL and restarting; the error also goes away on its own if the server is able to obtain a trusted validator list from the network (for example, after an network outage resolves itself).
+- **Improve manifest relaying:** Servers now propagate change messages for validators' ephemeral public keys ("manifests") on a best-effort basis, to make manifests more available throughout the peer-to-peer network. Previously, the server would only relay manifests from validators it trusts locally, which made it difficult to detect and track validators that are not broadly trusted.
+- **Implement ledger forward replay feature:** The server can now sync up to the network by "playing forward" transactions from a previously saved ledger until it catches up to the network. Compared with the default behavior of fetching the latest state and working backwards, forward replay can save time and bandwidth by reconstructing previous ledgers' state data rather than downloading the pre-calculated results from the network. As an added bonus, forward replay confirms that the rest of the network followed the same transaction processing rules as the local server when processing the intervening ledgers. This feature is considered experimental this time and can be enabled with an option in the config file.
+- **Make the transaction job queue limit adjustable:** The server uses a job queue to manage tasks, with limits on how many jobs of a particular type can be queued. The previously hard-coded limit associated with transactions is now configurable. Server operators can increase the number of transactions their server is able to queue, which may be useful if your server has a large memory capacity or you expect an influx of transactions. (https://github.com/ripple/rippled/issues/3556)
+- **Add public_key to the Validator List method response:** The [Validator List method](https://xrpl.org/validator-list.html) can be used to request a recommended validator list from a rippled instance. The response now includes the public key of the requested list. (https://github.com/ripple/rippled/issues/3392)
+- **Server operators can now configure maximum inbound and outbound peers separately:** The new `peers_in_max` and `peers_out_max` config options allow server operators to independently control the maximum number of inbound and outbound peers the server allows. [70c4ecc]
+- **Improvements to shard downloading:** Previously the download_shard command could only load shards over HTTPS. Compressed shards can now also be downloaded over plain HTTP. The server fully checks the data for integrity and consistency, so the encryption is not strictly necessary. When initiating multiple shard downloads, the server now returns an error if there is not enough space to store all the shards currently being downloaded.
+- **The manifest command is now public:** The manifest API method returns public information about a given validator. The required permissions have been changed so it is now part of the public API.
+
+### Bug Fixes
+
+- **Implement sticky DNS resolution for validator list retrieval:** When attempting to load a validator list from a configured site, attempt to reuse the last IP that was successfully used if that IP is still present in the DNS response. (https://github.com/ripple/rippled/issues/3494).
+- **Improve handling of RPC ledger_index argument:** You can now provide the `ledger_index` as a numeric string. This allows you to copy and use the numeric string `ledger_index` value returned by certain RPC commands. Previously you could only send native JSON numbers or shortcut strings such as "validated" in the `ledger_index` field. (https://github.com/ripple/rippled/issues/3533)
+- **Fix improper promotion of bool on return**  [6968da1]
+- **Fix ledger sequence on copynode** [ef53197] 
+-  **Fix parsing of node public keys in `manifest` CLI:** The previous code attempts to validate the provided node public key using a function that assumes that the encoded public key is for an account. This causes the parsing to fail. This commit fixes #3317 (https://github.com/ripple/rippled/issues/3317) by letting the caller specify the type of the public key being checked.
+- **Fix idle peer timer:** Fixes a bug where a function to remove idle peers was called every second instead of every 4 seconds. #3754 (https://github.com/ripple/rippled/issues/3754)
+- **Add database counters:** Fix bug where DatabaseRotateImp::getBackend and ::sync utilized the writable backend without a lock. ::getBackend was replaced with ::getCounters.
+- **Improve online_delete configuration and DB tuning** [6e9051e]
+- **Improve handling of burst writes in NuDB database** ( https://github.com/ripple/rippled/pull/3662 )
+- **Fix excessive logging after disabling history shards.** Previously if you configured the server with a shard store, then disabled it, the server output excessive warning messages about the shard limit being exceeded.
+- **Fixed some issues with negotiating link compression.** ( https://github.com/ripple/rippled/pull/3705 )
+- **Fixed a potential thread deadlock with history sharding.** ( https://github.com/ripple/rippled/pull/3683 )
+- **Various fixes to typos and comments, refactoring, and build system improvements**
 
 ## Version 1.6.0
 

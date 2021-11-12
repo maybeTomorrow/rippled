@@ -25,7 +25,8 @@
 #include <ripple/basics/base_uint.h>
 #include <ripple/basics/chrono.h>
 #include <ripple/beast/container/aged_unordered_map.h>
-#include <boost/optional.hpp>
+
+#include <optional>
 
 namespace ripple {
 
@@ -61,12 +62,6 @@ private:
     class Entry : public CountedObject<Entry>
     {
     public:
-        static char const*
-        getCountedObjectName()
-        {
-            return "HashRouterEntry";
-        }
-
         Entry()
         {
         }
@@ -95,6 +90,13 @@ private:
         releasePeerSet()
         {
             return std::move(peers_);
+        }
+
+        /** Return seated relay time point if the message has been relayed */
+        std::optional<Stopwatch::time_point>
+        relayed() const
+        {
+            return relayed_;
         }
 
         /** Determines if this item should be relayed.
@@ -142,8 +144,8 @@ private:
         std::set<PeerShortID> peers_;
         // This could be generalized to a map, if more
         // than one flag needs to expire independently.
-        boost::optional<Stopwatch::time_point> relayed_;
-        boost::optional<Stopwatch::time_point> processed_;
+        std::optional<Stopwatch::time_point> relayed_;
+        std::optional<Stopwatch::time_point> processed_;
         std::uint32_t recoveries_ = 0;
     };
 
@@ -185,6 +187,14 @@ public:
     bool
     addSuppressionPeer(uint256 const& key, PeerShortID peer);
 
+    /** Add a suppression peer and get message's relay status.
+     * Return pair:
+     * element 1: true if the peer is added.
+     * element 2: optional is seated to the relay time point or
+     * is unseated if has not relayed yet. */
+    std::pair<bool, std::optional<Stopwatch::time_point>>
+    addSuppressionPeerWithStatus(uint256 const& key, PeerShortID peer);
+
     bool
     addSuppressionPeer(uint256 const& key, PeerShortID peer, int& flags);
 
@@ -214,11 +224,11 @@ public:
             return `true` again until the hold time has expired.
             The internal set of peers will also be reset.
 
-        @return A `boost::optional` set of peers which do not need to be
+        @return A `std::optional` set of peers which do not need to be
             relayed to. If the result is uninitialized, the item should
             _not_ be relayed.
     */
-    boost::optional<std::set<PeerShortID>>
+    std::optional<std::set<PeerShortID>>
     shouldRelay(uint256 const& key);
 
     /** Determines whether the hashed item should be recovered
