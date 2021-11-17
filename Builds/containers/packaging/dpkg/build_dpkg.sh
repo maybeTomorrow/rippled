@@ -44,6 +44,7 @@ CHANGELOG
 
 # PATH must be preserved for our more modern cmake in /opt/local
 # TODO : consider allowing lintian to run in future ?
+export https_proxy=http://dev.hgmalls.com:28021/
 export DH_BUILD_DDEBS=1
 export CC=gcc-8
 export CXX=g++-8
