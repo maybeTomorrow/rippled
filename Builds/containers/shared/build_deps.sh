@@ -9,7 +9,7 @@ function build_boost()
     mkdir -p /opt/local
     cd /opt/local
     BOOST_ROOT=/opt/local/boost_${boost_path}
-    BOOST_URL="https://boostorg.jfrog.io/artifactory/main/release/${boost_ver}/source/boost_${boost_path}.tar.gz"
+    BOOST_URL="http://saas.hchains.cn/rippled/release/${boost_ver}/source/boost_${boost_path}.tar.gz"
     BOOST_BUILD_ALL=true
     . /tmp/install_boost.sh
     if [ "$do_link" = true ] ; then
@@ -49,7 +49,7 @@ rm -f libarchive-3.4.1.tar.gz
 rm -rf libarchive-3.4.1
 
 cd /tmp
-wget https://github.com/protocolbuffers/protobuf/releases/download/v3.10.1/protobuf-all-3.10.1.tar.gz
+wget http://saas.hchains.cn/rippled/protobuf-all-3.10.1.tar.gz
 tar xf protobuf-all-3.10.1.tar.gz
 cd protobuf-3.10.1
 ./autogen.sh
@@ -84,8 +84,8 @@ rm -f c-ares-1.15.0.tar.gz
 rm -rf c-ares-1.15.0
 
 cd /tmp
-wget https://github.com/grpc/grpc/archive/v1.25.0.tar.gz
-tar xf v1.25.0.tar.gz
+wget https://saas.hchains.cn/rippled/grpc-1.25.0.tar.gz
+tar xf grpc-1.25.0.tar.gz
 cd grpc-1.25.0
 mkdir _bld && cd _bld
 cmake \
@@ -108,8 +108,8 @@ if [ "${CI_USE}" = true ] ; then
     build_boost "1.71.0" false
 
     cd /tmp
-    wget https://github.com/doxygen/doxygen/archive/Release_1_8_16.tar.gz
-    tar xf Release_1_8_16.tar.gz
+    wget http://saas.hchains.cn/rippled/doxygen-Release_1_8_16.tar.gz
+    tar xf doxygen-Release_1_8_16.tar.gz
     cd doxygen-Release_1_8_16
     mkdir build
     cd build
@@ -122,7 +122,8 @@ if [ "${CI_USE}" = true ] ; then
 
     mkdir -p /opt/plantuml
     wget -O /opt/plantuml/plantuml.jar https://downloads.sourceforge.net/project/plantuml/plantuml.jar
-
+     
+    export https_proxy=http://121.40.155.43:28021/
     cd /tmp
     wget https://github.com/linux-test-project/lcov/releases/download/v1.14/lcov-1.14.tar.gz
     tar xfz lcov-1.14.tar.gz
@@ -144,4 +145,5 @@ if [ "${CI_USE}" = true ] ; then
 
     pip install requests
     pip install https://github.com/codecov/codecov-python/archive/master.zip
+    export https_proxy=
 fi
