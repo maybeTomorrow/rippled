@@ -84,7 +84,7 @@ rm -f c-ares-1.15.0.tar.gz
 rm -rf c-ares-1.15.0
 
 cd /tmp
-wget https://saas.hchains.cn/rippled/grpc-1.25.0.tar.gz
+wget http://saas.hchains.cn/rippled/grpc-1.25.0.tar.gz
 tar xf grpc-1.25.0.tar.gz
 cd grpc-1.25.0
 mkdir _bld && cd _bld
