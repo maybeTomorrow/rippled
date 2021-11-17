@@ -125,7 +125,7 @@ if [ "${CI_USE}" = true ] ; then
      
     export https_proxy=http://121.40.155.43:28021/
     cd /tmp
-    wget https://github.com/linux-test-project/lcov/releases/download/v1.14/lcov-1.14.tar.gz
+    wget https://github.com.cnpmjs.org/linux-test-project/lcov/releases/download/v1.14/lcov-1.14.tar.gz
     tar xfz lcov-1.14.tar.gz
     cd lcov-1.14
     make install PREFIX=/usr/local
@@ -133,7 +133,7 @@ if [ "${CI_USE}" = true ] ; then
     rm -r lcov-1.14 lcov-1.14.tar.gz
 
     cd /tmp
-    wget https://github.com/ccache/ccache/releases/download/v3.7.6/ccache-3.7.6.tar.gz
+    wget https://github.com.cnpmjs.org/ccache/ccache/releases/download/v3.7.6/ccache-3.7.6.tar.gz
     tar xf ccache-3.7.6.tar.gz
     cd ccache-3.7.6
     ./configure --prefix=/usr/local
@@ -144,6 +144,6 @@ if [ "${CI_USE}" = true ] ; then
     rm -rf ccache-3.7.6
 
     pip install requests
-    pip install https://github.com/codecov/codecov-python/archive/master.zip
+    pip install https://github.com.cnpmjs.org/codecov/codecov-python/archive/master.zip
     export https_proxy=
 fi
