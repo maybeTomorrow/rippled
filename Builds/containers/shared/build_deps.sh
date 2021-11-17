@@ -123,7 +123,7 @@ if [ "${CI_USE}" = true ] ; then
     mkdir -p /opt/plantuml
     wget -O /opt/plantuml/plantuml.jar https://downloads.sourceforge.net/project/plantuml/plantuml.jar
      
-    export https_proxy=http://121.40.155.43:28021/
+ 
     cd /tmp
     wget https://github.com.cnpmjs.org/linux-test-project/lcov/releases/download/v1.14/lcov-1.14.tar.gz
     tar xfz lcov-1.14.tar.gz
@@ -145,5 +145,4 @@ if [ "${CI_USE}" = true ] ; then
 
     pip install requests
     pip install https://github.com.cnpmjs.org/codecov/codecov-python/archive/master.zip
-    export https_proxy=
 fi
