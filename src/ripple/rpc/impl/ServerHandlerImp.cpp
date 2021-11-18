@@ -645,12 +645,12 @@ ServerHandlerImp::processSession(
             try
             {
                 
-                JLOG(m_journal.info()) << " need report3 url " << hostPair << portPair << pagePair << jr[jss::transaction].asString();
+                JLOG(m_journal.info()) << " need report3 url " << *hostPair << *portPair << *pagePair << jr[jss::transaction].asString();
 
                if(jr[jss::result].isMember(jss::tx_json)){
                     std::string data ="hash="+jr[jss::result][jss::tx_json][jss::hash].asString() +"&"+"ip="+ session->remote_endpoint().address().to_string();
                     JLOG(m_journal.info()) << "got hash and send data " << data;
-                    synchttp(hostPair,portPair,pagePair,data);
+                    synchttp(*hostPair,*portPair,*pagePair,data);
                 }
                
             }
