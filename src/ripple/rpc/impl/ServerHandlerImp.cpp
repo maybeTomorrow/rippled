@@ -635,22 +635,22 @@ ServerHandlerImp::processSession(
     {
         Section section = app_.config().section("report");
 
-        std::pair<std::string, bool> hostPair = section.find("host");
-        std::pair<std::string, bool> portPair = section.find("port");
-        std::pair<std::string, bool> pagePair = section.find("page");
-        if (hostPair.second &&
+        auto const hostPair = section.get("host");
+        auto const portPair = section.get("port");
+        auto const pagePair = section.get("page");
+        if (hostPair &&
             (jv[jss::command].asString() == "submit" ||
              jv[jss::method].asString() == "submit"))
         {
             try
             {
                 
-                JLOG(m_journal.info()) << " need report3 url " << hostPair.first << portPair.first << pagePair.first << jr[jss::transaction].asString();
+                JLOG(m_journal.info()) << " need report3 url " << hostPair << portPair << pagePair << jr[jss::transaction].asString();
 
                if(jr[jss::result].isMember(jss::tx_json)){
                     std::string data ="hash="+jr[jss::result][jss::tx_json][jss::hash].asString() +"&"+"ip="+ session->remote_endpoint().address().to_string();
                     JLOG(m_journal.info()) << "got hash and send data " << data;
-                    synchttp(hostPair.first,portPair.first,pagePair.first,data);
+                    synchttp(hostPair,portPair,pagePair,data);
                 }
                
             }
