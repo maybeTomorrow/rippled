@@ -2560,10 +2560,10 @@ NetworkOPsImp::getServerInfo(bool human, bool admin, bool counters)
         }
         else
         {
-            l[jss::base_fee_xrp] = baseFee.decimalXRP();
-            l[jss::reserve_base_xrp] =
+            l[jss::base_fee_hwa] = baseFee.decimalXRP();
+            l[jss::reserve_base_hwa] =
                 lpClosed->fees().accountReserve(0).decimalXRP();
-            l[jss::reserve_inc_xrp] = lpClosed->fees().increment.decimalXRP();
+            l[jss::reserve_inc_hwa] = lpClosed->fees().increment.decimalXRP();
 
             auto const nowOffset = app_.timeKeeper().nowOffset();
             if (std::abs(nowOffset.count()) >= 60)
