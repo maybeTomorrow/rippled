@@ -131,7 +131,7 @@ Json::Value
 rpf(jtx::Account const& src, jtx::Account const& dst, std::uint32_t num_src)
 {
     Json::Value jv = Json::objectValue;
-    jv[jss::command] = "ripple_path_find";
+    jv[jss::command] = "hchain_path_find";
     jv[jss::source_account] = toBase58(src);
 
     if (num_src > 0)
@@ -231,7 +231,7 @@ public:
             {}};
 
         Json::Value params = Json::objectValue;
-        params[jss::command] = "ripple_path_find";
+        params[jss::command] = "hchain_path_find";
         params[jss::source_account] = toBase58(src);
         params[jss::destination_account] = toBase58(dst);
         params[jss::destination_amount] =

@@ -220,7 +220,7 @@ PathRequests::makePathRequest(
     return std::move(jvRes);
 }
 
-// Make an old-style ripple_path_find request
+// Make an old-style hchain_path_find request
 Json::Value
 PathRequests::makeLegacyPathRequest(
     PathRequest::pointer& req,

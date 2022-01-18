@@ -167,7 +167,7 @@ printHelp(const po::options_description& desc)
            "     peer_reservations_del <public_key>\n"
            "     peer_reservations_list\n"
            "     ripple ...\n"
-           "     ripple_path_find <json> [<ledger>]\n"
+           "     hchain_path_find <json> [<ledger>]\n"
            "     server_info [counters]\n"
            "     server_state [counters]\n"
            "     sign <private_key> <tx_json> [offline]\n"

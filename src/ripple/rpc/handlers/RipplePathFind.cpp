@@ -62,7 +62,7 @@ doRipplePathFind(RPC::JsonContext& context)
         // And we may be flipping around between threads.  Here's an overview:
         //
         // 1. We're running doRipplePathFind() due to a call to
-        //    ripple_path_find.  doRipplePathFind() is currently running
+        //    hchain_path_find.  doRipplePathFind() is currently running
         //    inside of a JobQueue::Coro using a JobQueue thread.
         //
         // 2. doRipplePathFind's call to makeLegacyPathRequest() enqueues the

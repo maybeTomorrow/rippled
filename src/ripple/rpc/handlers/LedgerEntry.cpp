@@ -260,11 +260,11 @@ doLedgerEntry(RPC::JsonContext& context)
             jvResult[jss::error] = "malformedRequest";
         }
     }
-    else if (context.params.isMember(jss::ripple_state))
+    else if (context.params.isMember(jss::hchain_state))
     {
         expectedType = ltRIPPLE_STATE;
         Currency uCurrency;
-        Json::Value jvRippleState = context.params[jss::ripple_state];
+        Json::Value jvRippleState = context.params[jss::hchain_state];
 
         if (!jvRippleState.isObject() ||
             !jvRippleState.isMember(jss::currency) ||

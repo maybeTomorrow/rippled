@@ -129,7 +129,7 @@ Handler const handlerArray[]{
      byRef(&doPeerReservationsList),
      Role::ADMIN,
      NO_CONDITION},
-    {"ripple_path_find", byRef(&doRipplePathFind), Role::USER, NO_CONDITION},
+    {"hchain_path_find", byRef(&doRipplePathFind), Role::USER, NO_CONDITION},
     {"sign", byRef(&doSign), Role::USER, NO_CONDITION},
     {"sign_for", byRef(&doSignFor), Role::USER, NO_CONDITION},
     {"submit", byRef(&doSubmit), Role::USER, NEEDS_CURRENT_LEDGER},

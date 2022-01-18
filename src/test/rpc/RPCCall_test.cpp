@@ -4803,17 +4803,17 @@ static RPCCallTestData const rpcCallTestArray[] = {
     ]
     })"},
 
-    // ripple_path_find
+    // hchain_path_find
     // ------------------------------------------------------------
-    {"ripple_path_find: minimal.",
+    {"hchain_path_find: minimal.",
      __LINE__,
      {
-         "ripple_path_find",
+         "hchain_path_find",
          R"({"json_argument":true})",
      },
      RPCCallTestData::no_exception,
      R"({
-    "method" : "ripple_path_find",
+    "method" : "hchain_path_find",
     "params" : [
       {
          "api_version" : %MAX_API_VER%,
@@ -4821,12 +4821,12 @@ static RPCCallTestData const rpcCallTestArray[] = {
       }
     ]
     })"},
-    {"ripple_path_find: ledger index.",
+    {"hchain_path_find: ledger index.",
      __LINE__,
-     {"ripple_path_find", R"({"json_argument":true})", "4294967295"},
+     {"hchain_path_find", R"({"json_argument":true})", "4294967295"},
      RPCCallTestData::no_exception,
      R"({
-    "method" : "ripple_path_find",
+    "method" : "hchain_path_find",
     "params" : [
       {
          "api_version" : %MAX_API_VER%,
@@ -4835,12 +4835,12 @@ static RPCCallTestData const rpcCallTestArray[] = {
       }
     ]
     })"},
-    {"ripple_path_find: text ledger index.",
+    {"hchain_path_find: text ledger index.",
      __LINE__,
-     {"ripple_path_find", R"({"json_argument":true})", "closed"},
+     {"hchain_path_find", R"({"json_argument":true})", "closed"},
      RPCCallTestData::no_exception,
      R"({
-    "method" : "ripple_path_find",
+    "method" : "hchain_path_find",
     "params" : [
       {
          "api_version" : %MAX_API_VER%,
@@ -4849,14 +4849,14 @@ static RPCCallTestData const rpcCallTestArray[] = {
       }
     ]
     })"},
-    {"ripple_path_find: ledger hash.",
+    {"hchain_path_find: ledger hash.",
      __LINE__,
-     {"ripple_path_find",
+     {"hchain_path_find",
       R"({"json_argument":true})",
       "0123456789ABCDEFGHIJKLMNOPQRSTUV0123456789ABCDEFGHIJKLMNOPQRSTUV"},
      RPCCallTestData::no_exception,
      R"({
-    "method" : "ripple_path_find",
+    "method" : "hchain_path_find",
     "params" : [
       {
          "api_version" : %MAX_API_VER%,
@@ -4866,14 +4866,14 @@ static RPCCallTestData const rpcCallTestArray[] = {
     ]
     })"},
 
-    {"ripple_path_find: too few arguments.",
+    {"hchain_path_find: too few arguments.",
      __LINE__,
      {
-         "ripple_path_find",
+         "hchain_path_find",
      },
      RPCCallTestData::no_exception,
      R"({
-    "method" : "ripple_path_find",
+    "method" : "hchain_path_find",
     "params" : [
       {
          "error" : "badSyntax",
@@ -4882,12 +4882,12 @@ static RPCCallTestData const rpcCallTestArray[] = {
       }
     ]
     })"},
-    {"ripple_path_find: too many arguments.",
+    {"hchain_path_find: too many arguments.",
      __LINE__,
-     {"ripple_path_find", R"({"json_argument":true})", "current", "extra"},
+     {"hchain_path_find", R"({"json_argument":true})", "current", "extra"},
      RPCCallTestData::no_exception,
      R"({
-    "method" : "ripple_path_find",
+    "method" : "hchain_path_find",
     "params" : [
       {
          "error" : "badSyntax",
@@ -4896,15 +4896,15 @@ static RPCCallTestData const rpcCallTestArray[] = {
       }
     ]
     })"},
-    {"ripple_path_find: invalid json (note extra comma).",
+    {"hchain_path_find: invalid json (note extra comma).",
      __LINE__,
      {
-         "ripple_path_find",
+         "hchain_path_find",
          R"({"json_argument":true,})",
      },
      RPCCallTestData::no_exception,
      R"({
-    "method" : "ripple_path_find",
+    "method" : "hchain_path_find",
     "params" : [
       {
          "error" : "invalidParams",
@@ -4913,12 +4913,12 @@ static RPCCallTestData const rpcCallTestArray[] = {
       }
     ]
     })"},
-    {"ripple_path_find: ledger index too small.",
+    {"hchain_path_find: ledger index too small.",
      __LINE__,
-     {"ripple_path_find", R"({"json_argument":true})", "-1"},
+     {"hchain_path_find", R"({"json_argument":true})", "-1"},
      RPCCallTestData::no_exception,
      R"({
-    "method" : "ripple_path_find",
+    "method" : "hchain_path_find",
     "params" : [
       {
         "api_version" : %MAX_API_VER%,
@@ -4927,12 +4927,12 @@ static RPCCallTestData const rpcCallTestArray[] = {
       }
     ]
     })"},
-    {"ripple_path_find: ledger index too big.",
+    {"hchain_path_find: ledger index too big.",
      __LINE__,
-     {"ripple_path_find", R"({"json_argument":true})", "4294967296"},
+     {"hchain_path_find", R"({"json_argument":true})", "4294967296"},
      RPCCallTestData::no_exception,
      R"({
-    "method" : "ripple_path_find",
+    "method" : "hchain_path_find",
     "params" : [
       {
          "api_version" : %MAX_API_VER%,
@@ -4941,12 +4941,12 @@ static RPCCallTestData const rpcCallTestArray[] = {
       }
     ]
     })"},
-    {"ripple_path_find: invalid text ledger index.",
+    {"hchain_path_find: invalid text ledger index.",
      __LINE__,
-     {"ripple_path_find", R"({"json_argument":true})", "cur"},
+     {"hchain_path_find", R"({"json_argument":true})", "cur"},
      RPCCallTestData::no_exception,
      R"({
-    "method" : "ripple_path_find",
+    "method" : "hchain_path_find",
     "params" : [
       {
          "api_version" : %MAX_API_VER%,

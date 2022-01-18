@@ -59,10 +59,10 @@ class Offer_test : public beast::unit_test::suite
     {
         Json::Value jvParams;
         jvParams[jss::ledger_index] = "current";
-        jvParams[jss::ripple_state][jss::currency] = currency;
-        jvParams[jss::ripple_state][jss::accounts] = Json::arrayValue;
-        jvParams[jss::ripple_state][jss::accounts].append(acct_a.human());
-        jvParams[jss::ripple_state][jss::accounts].append(acct_b.human());
+        jvParams[jss::hchain_state][jss::currency] = currency;
+        jvParams[jss::hchain_state][jss::accounts] = Json::arrayValue;
+        jvParams[jss::hchain_state][jss::accounts].append(acct_a.human());
+        jvParams[jss::hchain_state][jss::accounts].append(acct_b.human());
         return env.rpc(
             "json", "ledger_entry", to_string(jvParams))[jss::result];
     }
@@ -4533,7 +4533,7 @@ public:
             jvParams[jss::source_account] = hotUS.human();
 
             Json::Value const jrr{env.rpc(
-                "json", "ripple_path_find", to_string(jvParams))[jss::result]};
+                "json", "hchain_path_find", to_string(jvParams))[jss::result]};
 
             BEAST_EXPECT(jrr[jss::status] == "success");
             BEAST_EXPECT(

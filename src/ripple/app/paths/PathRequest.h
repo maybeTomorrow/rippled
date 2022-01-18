@@ -66,7 +66,7 @@ public:
         PathRequests&,
         beast::Journal journal);
 
-    // ripple_path_find semantics
+    // hchain_path_find semantics
     // Completion function is called after path update is complete
     PathRequest(
         Application& app,

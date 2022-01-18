@@ -8,7 +8,7 @@
 // directory?l=L&o=A&i=I     // owner directory
 // offer?l=L&offer=H
 // offer?l=L&account=A&i=I
-// ripple_state=l=L&a=A&b=A&c=C
+// hchain_state=l=L&a=A&b=A&c=C
 // account_lines?l=L&a=A
 //
 // A=address

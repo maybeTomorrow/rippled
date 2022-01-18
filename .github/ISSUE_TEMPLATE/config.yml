@@ -1,8 +1,8 @@
 blank_issues_enabled: false
 contact_links:
-  - name: XRP Ledger Documentation
-    url: https://xrpl.org/
-    about: All things about XRPL
+  - name: HWA Ledger Documentation
+    url: https://hwal.org/
+    about: All things about HWAL
   - name: General question for the community
     url: https://forum.xpring.io/c/community/
     about: Please ask and answer questions here.

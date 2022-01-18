@@ -62,12 +62,12 @@ public:
             Json::Value lines{
                 env.rpc("json", "account_lines", to_string(account_gw))};
             auto const& gline0 = lines[jss::result][jss::lines][0u];
-            BEAST_EXPECT(gline0[jss::no_ripple].asBool() == SetOrClear);
+            BEAST_EXPECT(gline0[jss::no_hchain].asBool() == SetOrClear);
 
             // Check no-ripple peer flag on destination 'alice'
             lines = env.rpc("json", "account_lines", to_string(account_alice));
             auto const& aline0 = lines[jss::result][jss::lines][0u];
-            BEAST_EXPECT(aline0[jss::no_ripple_peer].asBool() == SetOrClear);
+            BEAST_EXPECT(aline0[jss::no_hchain_peer].asBool() == SetOrClear);
         }
     }
 
@@ -123,7 +123,7 @@ public:
             }();
 
             auto const resp =
-                env.rpc("json", "ripple_path_find", to_string(params));
+                env.rpc("json", "hchain_path_find", to_string(params));
             BEAST_EXPECT(resp[jss::result][jss::alternatives].size() == 1);
 
             auto getAccountLines = [&env](Account const& acct) {
@@ -135,12 +135,12 @@ public:
             {
                 auto const aliceLines = getAccountLines(alice);
                 BEAST_EXPECT(aliceLines.size() == 1);
-                BEAST_EXPECT(aliceLines[0u][jss::no_ripple].asBool() == false);
+                BEAST_EXPECT(aliceLines[0u][jss::no_hchain].asBool() == false);
 
                 auto const bobLines = getAccountLines(bob);
                 BEAST_EXPECT(bobLines.size() == 2);
-                BEAST_EXPECT(bobLines[0u][jss::no_ripple].asBool() == false);
-                BEAST_EXPECT(bobLines[1u][jss::no_ripple].asBool() == false);
+                BEAST_EXPECT(bobLines[0u][jss::no_hchain].asBool() == false);
+                BEAST_EXPECT(bobLines[1u][jss::no_hchain].asBool() == false);
             }
 
             // Now carol sends the 50 USD back to alice.  Then alice and
@@ -154,12 +154,12 @@ public:
             {
                 auto const aliceLines = getAccountLines(alice);
                 BEAST_EXPECT(aliceLines.size() == 1);
-                BEAST_EXPECT(aliceLines[0u].isMember(jss::no_ripple));
+                BEAST_EXPECT(aliceLines[0u].isMember(jss::no_hchain));
 
                 auto const bobLines = getAccountLines(bob);
                 BEAST_EXPECT(bobLines.size() == 2);
-                BEAST_EXPECT(bobLines[0u].isMember(jss::no_ripple_peer));
-                BEAST_EXPECT(bobLines[1u].isMember(jss::no_ripple));
+                BEAST_EXPECT(bobLines[0u].isMember(jss::no_hchain_peer));
+                BEAST_EXPECT(bobLines[1u].isMember(jss::no_hchain));
             }
         }
     }
@@ -197,7 +197,7 @@ public:
         }();
 
         Json::Value const resp{
-            env.rpc("json", "ripple_path_find", to_string(params))};
+            env.rpc("json", "hchain_path_find", to_string(params))};
         BEAST_EXPECT(resp[jss::result][jss::alternatives].size() == 0);
 
         env(pay(alice, carol, bob["USD"](50)), ter(tecPATH_DRY));
@@ -231,7 +231,7 @@ public:
 
             auto lines = env.rpc("json", "account_lines", to_string(params));
             auto const& line0 = lines[jss::result][jss::lines][0u];
-            BEAST_EXPECT(line0[jss::no_ripple_peer].asBool() == true);
+            BEAST_EXPECT(line0[jss::no_hchain_peer].asBool() == true);
         }
         {
             Json::Value params;
@@ -240,7 +240,7 @@ public:
 
             auto lines = env.rpc("json", "account_lines", to_string(params));
             auto const& line0 = lines[jss::result][jss::lines][0u];
-            BEAST_EXPECT(line0[jss::no_ripple].asBool() == true);
+            BEAST_EXPECT(line0[jss::no_hchain].asBool() == true);
         }
         {
             Json::Value params;
@@ -249,7 +249,7 @@ public:
 
             auto lines = env.rpc("json", "account_lines", to_string(params));
             auto const& line0 = lines[jss::result][jss::lines][0u];
-            BEAST_EXPECT(line0[jss::no_ripple].asBool() == false);
+            BEAST_EXPECT(line0[jss::no_hchain].asBool() == false);
         }
         {
             Json::Value params;
@@ -258,7 +258,7 @@ public:
 
             auto lines = env.rpc("json", "account_lines", to_string(params));
             auto const& line0 = lines[jss::result][jss::lines][0u];
-            BEAST_EXPECT(line0[jss::no_ripple_peer].asBool() == false);
+            BEAST_EXPECT(line0[jss::no_hchain_peer].asBool() == false);
         }
     }
 

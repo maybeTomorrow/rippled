@@ -325,7 +325,7 @@ public:
                     gw2.human() + R"("})");
             auto const& line = lines[jss::result][jss::lines][0u];
             BEAST_EXPECT(line[jss::freeze].asBool() == true);
-            BEAST_EXPECT(line[jss::no_ripple].asBool() == true);
+            BEAST_EXPECT(line[jss::no_hchain].asBool() == true);
             BEAST_EXPECT(line[jss::peer_authorized].asBool() == true);
         }
         {
@@ -340,7 +340,7 @@ public:
                     alice.human() + R"("})");
             auto const& lineA = linesA[jss::result][jss::lines][0u];
             BEAST_EXPECT(lineA[jss::freeze_peer].asBool() == true);
-            BEAST_EXPECT(lineA[jss::no_ripple_peer].asBool() == true);
+            BEAST_EXPECT(lineA[jss::no_hchain_peer].asBool() == true);
             BEAST_EXPECT(lineA[jss::authorized].asBool() == true);
 
             // Continue from the returned marker to make sure that works.
@@ -971,7 +971,7 @@ public:
                     gw2.human() + R"("}})");
             auto const& line = lines[jss::result][jss::lines][0u];
             BEAST_EXPECT(line[jss::freeze].asBool() == true);
-            BEAST_EXPECT(line[jss::no_ripple].asBool() == true);
+            BEAST_EXPECT(line[jss::no_hchain].asBool() == true);
             BEAST_EXPECT(line[jss::peer_authorized].asBool() == true);
             BEAST_EXPECT(
                 lines.isMember(jss::jsonrpc) && lines[jss::jsonrpc] == "2.0");
@@ -998,7 +998,7 @@ public:
                     alice.human() + R"("}})");
             auto const& lineA = linesA[jss::result][jss::lines][0u];
             BEAST_EXPECT(lineA[jss::freeze_peer].asBool() == true);
-            BEAST_EXPECT(lineA[jss::no_ripple_peer].asBool() == true);
+            BEAST_EXPECT(lineA[jss::no_hchain_peer].asBool() == true);
             BEAST_EXPECT(lineA[jss::authorized].asBool() == true);
             BEAST_EXPECT(
                 linesA.isMember(jss::jsonrpc) && linesA[jss::jsonrpc] == "2.0");

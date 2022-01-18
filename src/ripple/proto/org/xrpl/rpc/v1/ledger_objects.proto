@@ -21,7 +21,7 @@ message LedgerObject
         LedgerHashes ledger_hashes = 8;
         Offer offer = 9;
         PayChannel pay_channel = 10;
-        RippleState ripple_state = 11;
+        RippleState hchain_state = 11;
         SignerList signer_list = 12;
         NegativeUNL negative_unl = 13;
         TicketObject ticket = 14;

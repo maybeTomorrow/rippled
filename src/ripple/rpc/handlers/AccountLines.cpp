@@ -63,9 +63,9 @@ addLine(Json::Value& jsonLines, RippleState const& line)
     if (line.getAuthPeer())
         jPeer[jss::peer_authorized] = true;
     if (line.getNoRipple() || !line.getDefaultRipple())
-        jPeer[jss::no_ripple] = line.getNoRipple();
+        jPeer[jss::no_hchain] = line.getNoRipple();
     if (line.getNoRipplePeer() || !line.getDefaultRipple())
-        jPeer[jss::no_ripple_peer] = line.getNoRipplePeer();
+        jPeer[jss::no_hchain_peer] = line.getNoRipplePeer();
     if (line.getFreeze())
         jPeer[jss::freeze] = true;
     if (line.getFreezePeer())

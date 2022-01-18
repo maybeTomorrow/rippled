@@ -967,7 +967,7 @@ private:
         return jvRequest;
     }
 
-    // ripple_path_find <json> [<ledger>]
+    // hchain_path_find <json> [<ledger>]
     Json::Value
     parseRipplePathFind(Json::Value const& jvParams)
     {
@@ -1283,7 +1283,7 @@ public:
              1,
              1},
             {"peer_reservations_list", &RPCParser::parseAsIs, 0, 0},
-            {"ripple_path_find", &RPCParser::parseRipplePathFind, 1, 2},
+            {"hchain_path_find", &RPCParser::parseRipplePathFind, 1, 2},
             {"sign", &RPCParser::parseSignSubmit, 2, 3},
             {"sign_for", &RPCParser::parseSignFor, 3, 4},
             {"submit", &RPCParser::parseSignSubmit, 1, 3},

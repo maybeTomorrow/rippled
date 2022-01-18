@@ -605,7 +605,7 @@ PathRequest::findPaths(
 
             if (hasCompletion())
             {
-                // Old ripple_path_find API requires this
+                // Old hchain_path_find API requires this
                 jvEntry[jss::paths_canonical] = Json::arrayValue;
             }
 
@@ -645,7 +645,7 @@ PathRequest::doUpdate(std::shared_ptr<RippleLineCache> const& cache, bool fast)
 
     if (hasCompletion())
     {
-        // Old ripple_path_find API gives destination_currencies
+        // Old hchain_path_find API gives destination_currencies
         auto& destCurrencies =
             (newStatus[jss::destination_currencies] = Json::arrayValue);
         auto usCurrencies = accountDestCurrencies(*raDstAccount, cache, true);

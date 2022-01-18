@@ -389,8 +389,8 @@ JSS(needed_transaction_hashes);  // out: InboundLedger
 JSS(network_id);                 // out: NetworkOPs
 JSS(network_ledger);             // out: NetworkOPs
 JSS(next_refresh_time);          // out: ValidatorSite
-JSS(no_ripple);                  // out: AccountLines
-JSS(no_ripple_peer);             // out: AccountLines
+JSS(no_hchain);                  // out: AccountLines
+JSS(no_hchain_peer);             // out: AccountLines
 JSS(node);                       // out: LedgerEntry
 JSS(node_binary);                // out: LedgerEntry
 JSS(node_read_bytes);            // out: GetCounts
@@ -477,7 +477,7 @@ JSS(reserve_inc_hwa);       // out: NetworkOPs
 JSS(response);              // websocket
 JSS(result);                // RPC
 JSS(ripple_lines);          // out: NetworkOPs
-JSS(ripple_state);          // in: LedgerEntr
+JSS(hchain_state);          // in: LedgerEntr
 JSS(ripplerpc);             // ripple RPC version
 JSS(role);                  // out: Ping.cpp
 JSS(rpc);
