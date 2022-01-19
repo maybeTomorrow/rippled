@@ -47,7 +47,7 @@ class NoRippleCheck_test : public beast::unit_test::suite
 
         {  // missing account field
             auto const result =
-                env.rpc("json", "noripple_check", "{}")[jss::result];
+                env.rpc("json", "nohchain_check", "{}")[jss::result];
             BEAST_EXPECT(result[jss::error] == "invalidParams");
             BEAST_EXPECT(
                 result[jss::error_message] == "Missing field 'account'.");
@@ -58,7 +58,7 @@ class NoRippleCheck_test : public beast::unit_test::suite
             params[jss::account] = alice.human();
             auto const result = env.rpc(
                 "json",
-                "noripple_check",
+                "nohchain_check",
                 boost::lexical_cast<std::string>(params))[jss::result];
             BEAST_EXPECT(result[jss::error] == "invalidParams");
             BEAST_EXPECT(result[jss::error_message] == "Missing field 'role'.");
@@ -70,7 +70,7 @@ class NoRippleCheck_test : public beast::unit_test::suite
             params[jss::role] = "not_a_role";
             auto const result = env.rpc(
                 "json",
-                "noripple_check",
+                "nohchain_check",
                 boost::lexical_cast<std::string>(params))[jss::result];
             BEAST_EXPECT(result[jss::error] == "invalidParams");
             BEAST_EXPECT(result[jss::error_message] == "Invalid field 'role'.");
@@ -83,7 +83,7 @@ class NoRippleCheck_test : public beast::unit_test::suite
             params[jss::limit] = -1;
             auto const result = env.rpc(
                 "json",
-                "noripple_check",
+                "nohchain_check",
                 boost::lexical_cast<std::string>(params))[jss::result];
             BEAST_EXPECT(result[jss::error] == "invalidParams");
             BEAST_EXPECT(
@@ -98,7 +98,7 @@ class NoRippleCheck_test : public beast::unit_test::suite
             params[jss::ledger_hash] = 1;
             auto const result = env.rpc(
                 "json",
-                "noripple_check",
+                "nohchain_check",
                 boost::lexical_cast<std::string>(params))[jss::result];
             BEAST_EXPECT(result[jss::error] == "invalidParams");
             BEAST_EXPECT(result[jss::error_message] == "ledgerHashNotString");
@@ -111,7 +111,7 @@ class NoRippleCheck_test : public beast::unit_test::suite
             params[jss::ledger] = "current";
             auto const result = env.rpc(
                 "json",
-                "noripple_check",
+                "nohchain_check",
                 boost::lexical_cast<std::string>(params))[jss::result];
             BEAST_EXPECT(result[jss::error] == "actNotFound");
             BEAST_EXPECT(result[jss::error_message] == "Account not found.");
@@ -125,7 +125,7 @@ class NoRippleCheck_test : public beast::unit_test::suite
             params[jss::ledger] = "current";
             auto const result = env.rpc(
                 "json",
-                "noripple_check",
+                "nohchain_check",
                 boost::lexical_cast<std::string>(params))[jss::result];
             BEAST_EXPECT(result[jss::error] == "badSeed");
             BEAST_EXPECT(result[jss::error_message] == "Disallowed seed.");
@@ -163,7 +163,7 @@ class NoRippleCheck_test : public beast::unit_test::suite
         params[jss::ledger] = "current";
         auto result = env.rpc(
             "json",
-            "noripple_check",
+            "nohchain_check",
             boost::lexical_cast<std::string>(params))[jss::result];
 
         auto const pa = result["problems"];
@@ -200,7 +200,7 @@ class NoRippleCheck_test : public beast::unit_test::suite
         params[jss::transactions] = true;
         result = env.rpc(
             "json",
-            "noripple_check",
+            "nohchain_check",
             boost::lexical_cast<std::string>(params))[jss::result];
         if (!BEAST_EXPECT(result[jss::transactions].isArray()))
             return;
@@ -322,7 +322,7 @@ class NoRippleCheckLimits_test : public beast::unit_test::suite
         params[jss::ledger] = "current";
         auto result = env.rpc(
             "json",
-            "noripple_check",
+            "nohchain_check",
             boost::lexical_cast<std::string>(params))[jss::result];
 
         BEAST_EXPECT(result["problems"].size() == 301);
@@ -331,7 +331,7 @@ class NoRippleCheckLimits_test : public beast::unit_test::suite
         params[jss::limit] = 9;
         result = env.rpc(
             "json",
-            "noripple_check",
+            "nohchain_check",
             boost::lexical_cast<std::string>(params))[jss::result];
         BEAST_EXPECT(result["problems"].size() == (admin ? 10 : 11));
 
@@ -339,7 +339,7 @@ class NoRippleCheckLimits_test : public beast::unit_test::suite
         params[jss::limit] = 10;
         result = env.rpc(
             "json",
-            "noripple_check",
+            "nohchain_check",
             boost::lexical_cast<std::string>(params))[jss::result];
         BEAST_EXPECT(result["problems"].size() == 11);
 
@@ -347,7 +347,7 @@ class NoRippleCheckLimits_test : public beast::unit_test::suite
         params[jss::limit] = 400;
         result = env.rpc(
             "json",
-            "noripple_check",
+            "nohchain_check",
             boost::lexical_cast<std::string>(params))[jss::result];
         BEAST_EXPECT(result["problems"].size() == 401);
 
@@ -355,7 +355,7 @@ class NoRippleCheckLimits_test : public beast::unit_test::suite
         params[jss::limit] = 401;
         result = env.rpc(
             "json",
-            "noripple_check",
+            "nohchain_check",
             boost::lexical_cast<std::string>(params))[jss::result];
         BEAST_EXPECT(result["problems"].size() == (admin ? 402 : 401));
     }

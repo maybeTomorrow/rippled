@@ -89,7 +89,7 @@ LedgerFormats::LedgerFormats()
         },
         commonFields);
 
-    add(jss::RippleState,
+    add(jss::HchainState,
         ltRIPPLE_STATE,
         {
             {sfBalance, soeREQUIRED},

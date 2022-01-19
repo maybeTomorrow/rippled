@@ -523,7 +523,7 @@ public:
                 std::vector<std::string> v{
                     jss::Escrow.c_str(),
                     jss::Check.c_str(),
-                    jss::RippleState.c_str(),
+                    jss::HchainState.c_str(),
                     jss::PayChannel.c_str()};
                 std::sort(v.begin(), v.end());
                 return v;

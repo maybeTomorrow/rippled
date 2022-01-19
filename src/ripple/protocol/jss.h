@@ -80,7 +80,7 @@ JSS(Payment);                // transaction type.
 JSS(PaymentChannelClaim);    // transaction type.
 JSS(PaymentChannelCreate);   // transaction type.
 JSS(PaymentChannelFund);     // transaction type.
-JSS(RippleState);            // ledger type.
+JSS(HchainState);            // ledger type.
 JSS(SLE_hit_rate);           // out: GetCounts.
 JSS(SetFee);                 // transaction type.
 JSS(UNLModify);              // transaction type.
