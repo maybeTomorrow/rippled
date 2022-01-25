@@ -73,7 +73,7 @@ getVersionString()
 std::string const&
 getFullVersionString()
 {
-    static std::string const value = "rippled-" + getVersionString();
+    static std::string const value = "hwa-" + getVersionString();
     return value;
 }
 

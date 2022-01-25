@@ -72,7 +72,7 @@ static_assert(
 std::string
 to_string(ProtocolVersion const& p)
 {
-    return "XRPL/" + std::to_string(p.first) + "." + std::to_string(p.second);
+    return "HWAL/" + std::to_string(p.first) + "." + std::to_string(p.second);
 }
 
 std::vector<ProtocolVersion>
@@ -80,7 +80,7 @@ parseProtocolVersions(boost::beast::string_view const& value)
 {
     static boost::regex re(
         "^"                        // start of line
-        "XRPL/"                    // The string "XRPL/"
+        "HWAL/"                    // The string "HWAL/"
         "([2-9]|(?:[1-9][0-9]+))"  // a number (greater than 2 with no leading
                                    // zeroes)
         "\\."                      // a period
