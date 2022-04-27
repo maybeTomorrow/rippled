@@ -155,7 +155,7 @@ ReportingETL::loadInitialLedger(uint32_t startingSequence)
     // Once the below call returns, all data has been pushed into the queue
     loadBalancer_.loadInitialLedger(startingSequence, writeQueue);
 
-    // null is used to respresent the end of the queue
+    // null is used to represent the end of the queue
     std::shared_ptr<SLE> null;
     writeQueue.push(null);
     // wait for the writer to finish
@@ -524,14 +524,6 @@ ReportingETL::runETLPipeline(uint32_t startSequence)
             auto start = std::chrono::system_clock::now();
             std::optional<org::xrpl::rpc::v1::GetLedgerResponse> fetchResponse{
                 fetchLedgerDataAndDiff(currentSequence)};
-            auto end = std::chrono::system_clock::now();
-
-            auto time = ((end - start).count()) / 1000000000.0;
-            auto tps =
-                fetchResponse->transactions_list().transactions_size() / time;
-
-            JLOG(journal_.debug()) << "Extract phase time = " << time
-                                   << " . Extract phase tps = " << tps;
             // if the fetch is unsuccessful, stop. fetchLedger only returns
             // false if the server is shutting down, or if the ledger was
             // found in the database (which means another process already
@@ -543,6 +535,14 @@ ReportingETL::runETLPipeline(uint32_t startSequence)
             {
                 break;
             }
+            auto end = std::chrono::system_clock::now();
+
+            auto time = ((end - start).count()) / 1000000000.0;
+            auto tps =
+                fetchResponse->transactions_list().transactions_size() / time;
+
+            JLOG(journal_.debug()) << "Extract phase time = " << time
+                                   << " . Extract phase tps = " << tps;
 
             transformQueue.push(std::move(fetchResponse));
             ++currentSequence;
@@ -929,10 +929,14 @@ ReportingETL::ReportingETL(Application& app)
         {
             auto const optStartSeq = section.get("start_sequence");
             if (optStartSeq)
+            {
+                // set a value so we can dereference
+                startSequence_ = 0;
                 asciiToIntThrows(
                     *startSequence_,
                     *optStartSeq,
                     "Expected integral start_sequence config entry. Got: ");
+            }
         }
 
         auto const optFlushInterval = section.get("flush_interval");

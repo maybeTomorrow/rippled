@@ -760,7 +760,7 @@ Ledger::updateNegativeUNL()
 
 //------------------------------------------------------------------------------
 bool
-Ledger::walkLedger(beast::Journal j) const
+Ledger::walkLedger(beast::Journal j, bool parallel) const
 {
     std::vector<SHAMapMissingNode> missingNodes1;
     std::vector<SHAMapMissingNode> missingNodes2;
@@ -773,7 +773,10 @@ Ledger::walkLedger(beast::Journal j) const
     }
     else
     {
-        stateMap_->walkMap(missingNodes1, 32);
+        if (parallel)
+            return stateMap_->walkMapParallel(missingNodes1, 32);
+        else
+            stateMap_->walkMap(missingNodes1, 32);
     }
 
     if (!missingNodes1.empty())
@@ -978,10 +981,9 @@ pendSaveValidated(
 
     // See if we can use the JobQueue.
     if (!isSynchronous &&
-        app.getJobQueue().addJob(
-            jobType, jobName, [&app, ledger, isCurrent](Job&) {
-                saveValidatedLedger(app, ledger, isCurrent);
-            }))
+        app.getJobQueue().addJob(jobType, jobName, [&app, ledger, isCurrent]() {
+            saveValidatedLedger(app, ledger, isCurrent);
+        }))
     {
         return true;
     }

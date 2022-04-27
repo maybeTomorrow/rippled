@@ -27,6 +27,8 @@
 #include <ripple/core/Pg.h>
 #include <ripple/nodestore/impl/DatabaseRotatingImp.h>
 
+#include <ripple/nodestore/Scheduler.h>
+
 #include <boost/algorithm/string/predicate.hpp>
 
 namespace ripple {
@@ -166,7 +168,23 @@ SHAMapStoreImp::SHAMapStoreImp(
 std::unique_ptr<NodeStore::Database>
 SHAMapStoreImp::makeNodeStore(std::int32_t readThreads)
 {
+    auto nscfg = app_.config().section(ConfigSection::nodeDatabase());
+
+    // Provide default values:
+    if (!nscfg.exists("cache_size"))
+        nscfg.set(
+            "cache_size",
+            std::to_string(app_.config().getValueFor(
+                SizedItem::treeCacheSize, std::nullopt)));
+
+    if (!nscfg.exists("cache_age"))
+        nscfg.set(
+            "cache_age",
+            std::to_string(app_.config().getValueFor(
+                SizedItem::treeCacheAge, std::nullopt)));
+
     std::unique_ptr<NodeStore::Database> db;
+
     if (deleteInterval_)
     {
         if (app_.config().reporting())
@@ -185,13 +203,14 @@ SHAMapStoreImp::makeNodeStore(std::int32_t readThreads)
             state_db_.setState(state);
         }
 
-        // Create NodeStore with two backends to allow online deletion of data
+        // Create NodeStore with two backends to allow online deletion of
+        // data
         auto dbr = std::make_unique<NodeStore::DatabaseRotatingImp>(
             scheduler_,
             readThreads,
             std::move(writableBackend),
             std::move(archiveBackend),
-            app_.config().section(ConfigSection::nodeDatabase()),
+            nscfg,
             app_.logs().journal(nodeStoreName_));
         fdRequired_ += dbr->fdRequired();
         dbRotating_ = dbr.get();
@@ -204,7 +223,7 @@ SHAMapStoreImp::makeNodeStore(std::int32_t readThreads)
                 app_.config().getValueFor(SizedItem::burstSize, std::nullopt)),
             scheduler_,
             readThreads,
-            app_.config().section(ConfigSection::nodeDatabase()),
+            nscfg,
             app_.logs().journal(nodeStoreName_));
         fdRequired_ += db->fdRequired();
     }
@@ -242,7 +261,11 @@ bool
 SHAMapStoreImp::copyNode(std::uint64_t& nodeCount, SHAMapTreeNode const& node)
 {
     // Copy a single record from node to dbRotating_
-    dbRotating_->fetchNodeObject(node.getHash().as_uint256());
+    dbRotating_->fetchNodeObject(
+        node.getHash().as_uint256(),
+        0,
+        NodeStore::FetchType::synchronous,
+        true);
     if (!(++nodeCount % checkHealthInterval_))
     {
         if (health())
@@ -462,6 +485,7 @@ SHAMapStoreImp::dbPaths()
     bool writableDbExists = false;
     bool archiveDbExists = false;
 
+    std::vector<boost::filesystem::path> pathsToDelete;
     for (boost::filesystem::directory_iterator it(dbPath);
          it != boost::filesystem::directory_iterator();
          ++it)
@@ -471,7 +495,7 @@ SHAMapStoreImp::dbPaths()
         else if (!state.archiveDb.compare(it->path().string()))
             archiveDbExists = true;
         else if (!dbPrefix_.compare(it->path().stem().string()))
-            boost::filesystem::remove_all(it->path());
+            pathsToDelete.push_back(it->path());
     }
 
     if ((!writableDbExists && state.writableDb.size()) ||
@@ -501,6 +525,10 @@ SHAMapStoreImp::dbPaths()
 
         Throw<std::runtime_error>("state db error");
     }
+
+    // The necessary directories exist. Now, remove any others.
+    for (boost::filesystem::path& p : pathsToDelete)
+        boost::filesystem::remove_all(p);
 }
 
 std::unique_ptr<NodeStore::Backend>

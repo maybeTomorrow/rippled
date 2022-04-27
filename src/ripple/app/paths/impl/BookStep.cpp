@@ -1098,7 +1098,7 @@ BookStep<TIn, TOut, TDerived>::check(StrandContext const& ctx) const
                 return terNO_LINE;
             if ((*sle)[sfFlags] &
                 ((cur > *prev) ? lsfHighNoRipple : lsfLowNoRipple))
-                return terNO_RIPPLE;
+                return terNO_HCHAIN;
         }
     }
 

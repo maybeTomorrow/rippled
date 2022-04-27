@@ -80,7 +80,7 @@ checkNoRipple(
         JLOG(j.info()) << "Path violates noRipple constraint between " << prev
                        << ", " << cur << " and " << next;
 
-        return terNO_RIPPLE;
+        return terNO_HCHAIN;
     }
     return tesSUCCESS;
 }

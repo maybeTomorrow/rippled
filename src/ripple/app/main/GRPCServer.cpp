@@ -22,7 +22,7 @@
 #include <ripple/beast/core/CurrentThreadName.h>
 #include <ripple/resource/Fees.h>
 
-#include <beast/net/IPAddressConversion.h>
+#include <ripple/beast/net/IPAddressConversion.h>
 
 namespace ripple {
 
@@ -144,11 +144,11 @@ GRPCServerImpl::CallData<Request, Response>::process(
     {
         auto usage = getUsage();
         bool isUnlimited = clientIsUnlimited();
-        if (!isUnlimited && usage.disconnect())
+        if (!isUnlimited && usage.disconnect(app_.journal("gRPCServer")))
         {
             grpc::Status status{
                 grpc::StatusCode::RESOURCE_EXHAUSTED,
-                "usage balance exceeds threshhold"};
+                "usage balance exceeds threshold"};
             responder_.FinishWithError(status, this);
         }
         else
