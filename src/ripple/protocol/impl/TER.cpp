@@ -48,11 +48,7 @@ transResults()
         MAKE_ERROR(tecINSUF_RESERVE_LINE,            "Insufficient reserve to add trust line."),
         MAKE_ERROR(tecINSUF_RESERVE_OFFER,           "Insufficient reserve to create offer."),
         MAKE_ERROR(tecNO_DST,                        "Destination does not exist. Send HWA to create it."),
-<<<<<<< HEAD
         MAKE_ERROR(tecNO_DST_INSUF_HWA,              "Destination does not exist. Too little HWA sent to create it."),
-=======
-        MAKE_ERROR(tecNO_DST_INSUF_HWA,              "Destination does not exist. Too little XRP sent to create it."),
->>>>>>> ripple-release
         MAKE_ERROR(tecNO_LINE_INSUF_RESERVE,         "No such line. Too little reserve to create it."),
         MAKE_ERROR(tecNO_LINE_REDUNDANT,             "Can't set non-existent line to default."),
         MAKE_ERROR(tecPATH_DRY,                      "Path could not send partial amount."),
@@ -60,17 +56,10 @@ transResults()
         MAKE_ERROR(tecNO_ALTERNATIVE_KEY,            "The operation would remove the ability to sign transactions with the account."),
         MAKE_ERROR(tecNO_REGULAR_KEY,                "Regular key is not set."),
         MAKE_ERROR(tecOVERSIZE,                      "Object exceeded serialization limits."),
-<<<<<<< HEAD
         MAKE_ERROR(tecUNFUNDED,                      "Not enough HWA to satisfy the reserve requirement."),
         MAKE_ERROR(tecUNFUNDED_ADD,                  "DEPRECATED."),
         MAKE_ERROR(tecUNFUNDED_OFFER,                "Insufficient balance to fund created offer."),
         MAKE_ERROR(tecUNFUNDED_PAYMENT,              "Insufficient HWA balance to send."),
-=======
-        MAKE_ERROR(tecUNFUNDED,                      "Not enough XRP to satisfy the reserve requirement."),
-        MAKE_ERROR(tecUNFUNDED_ADD,                  "DEPRECATED."),
-        MAKE_ERROR(tecUNFUNDED_OFFER,                "Insufficient balance to fund created offer."),
-        MAKE_ERROR(tecUNFUNDED_PAYMENT,              "Insufficient XRP balance to send."),
->>>>>>> ripple-release
         MAKE_ERROR(tecOWNERS,                        "Non-zero owner count."),
         MAKE_ERROR(tecNO_ISSUER,                     "Issuer account does not exist."),
         MAKE_ERROR(tecNO_AUTH,                       "Not authorized to hold asset."),
@@ -140,11 +129,7 @@ transResults()
         MAKE_ERROR(temBAD_AMOUNT,                "Can only send positive amounts."),
         MAKE_ERROR(temBAD_CURRENCY,              "Malformed: Bad currency."),
         MAKE_ERROR(temBAD_EXPIRATION,            "Malformed: Bad expiration."),
-<<<<<<< HEAD
         MAKE_ERROR(temBAD_FEE,                   "Invalid fee, negative or not HWA."),
-=======
-        MAKE_ERROR(temBAD_FEE,                   "Invalid fee, negative or not XRP."),
->>>>>>> ripple-release
         MAKE_ERROR(temBAD_ISSUER,                "Malformed: Bad issuer."),
         MAKE_ERROR(temBAD_LIMIT,                 "Limits must be non-negative."),
         MAKE_ERROR(temBAD_OFFER,                 "Malformed: Bad offer."),
@@ -152,19 +137,11 @@ transResults()
         MAKE_ERROR(temBAD_PATH_LOOP,             "Malformed: Loop in path."),
         MAKE_ERROR(temBAD_QUORUM,                "Malformed: Quorum is unreachable."),
         MAKE_ERROR(temBAD_REGKEY,                "Malformed: Regular key cannot be same as master key."),
-<<<<<<< HEAD
         MAKE_ERROR(temBAD_SEND_HWA_LIMIT,        "Malformed: Limit quality is not allowed for HWA to HWA."),
         MAKE_ERROR(temBAD_SEND_HWA_MAX,          "Malformed: Send max is not allowed for HWA to HWA."),
         MAKE_ERROR(temBAD_SEND_HWA_NO_DIRECT,    "Malformed: No Hchain direct is not allowed for HWA to HWA."),
         MAKE_ERROR(temBAD_SEND_HWA_PARTIAL,      "Malformed: Partial payment is not allowed for HWA to HWA."),
         MAKE_ERROR(temBAD_SEND_HWA_PATHS,        "Malformed: Paths are not allowed for HWA to HWA."),
-=======
-        MAKE_ERROR(temBAD_SEND_HWA_LIMIT,        "Malformed: Limit quality is not allowed for XRP to XRP."),
-        MAKE_ERROR(temBAD_SEND_HWA_MAX,          "Malformed: Send max is not allowed for XRP to XRP."),
-        MAKE_ERROR(temBAD_SEND_HWA_NO_DIRECT,    "Malformed: No Hchain direct is not allowed for XRP to XRP."),
-        MAKE_ERROR(temBAD_SEND_HWA_PARTIAL,      "Malformed: Partial payment is not allowed for XRP to XRP."),
-        MAKE_ERROR(temBAD_SEND_HWA_PATHS,        "Malformed: Paths are not allowed for XRP to XRP."),
->>>>>>> ripple-release
         MAKE_ERROR(temBAD_SEQUENCE,              "Malformed: Sequence is not in the past."),
         MAKE_ERROR(temBAD_SIGNATURE,             "Malformed: Bad signature."),
         MAKE_ERROR(temBAD_SIGNER,                "Malformed: No signer may duplicate account or other signers."),
@@ -176,11 +153,7 @@ transResults()
         MAKE_ERROR(temINVALID,                   "The transaction is ill-formed."),
         MAKE_ERROR(temINVALID_FLAG,              "The transaction has an invalid flag."),
         MAKE_ERROR(temREDUNDANT,                 "The transaction is redundant."),
-<<<<<<< HEAD
         MAKE_ERROR(temHCHAIN_EMPTY,              "PathSet with no paths."),
-=======
-        MAKE_ERROR(temRIPPLE_EMPTY,              "PathSet with no paths."),
->>>>>>> ripple-release
         MAKE_ERROR(temUNCERTAIN,                 "In process of determining result. Never returned."),
         MAKE_ERROR(temUNKNOWN,                   "The transaction requires logic that is not implemented yet."),
         MAKE_ERROR(temDISABLED,                  "The transaction requires logic that is currently disabled."),
