@@ -526,7 +526,7 @@ toStrands(
     {
         JLOG(j.debug()) << "Flow: Invalid transaction: No paths and direct "
                            "ripple not allowed.";
-        return {temRIPPLE_EMPTY, std::vector<Strand>{}};
+        return {temHCHAIN_EMPTY, std::vector<Strand>{}};
     }
 
     TER lastFailTer = tesSUCCESS;

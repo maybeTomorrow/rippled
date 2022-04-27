@@ -72,7 +72,7 @@ public:
                 "A.1,HWAL/2.01",
                 "HWAL/2.0,HWAL/7.89,HWAL/19.4");
             check(
-                "HWAL/2.0,HWAL/3.0,HWAL/4,HWAL/,XRPL,OPT HWAL/2.2,HWAL/5.67",
+                "HWAL/2.0,HWAL/3.0,HWAL/4,HWAL/,HWAL,OPT HWAL/2.2,HWAL/5.67",
                 "HWAL/2.0,HWAL/3.0,HWAL/5.67");
         }
 

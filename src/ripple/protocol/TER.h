@@ -105,7 +105,7 @@ enum TEMcodes : TERUnderlyingType {
     temINVALID,
     temINVALID_FLAG,
     temREDUNDANT,
-    temRIPPLE_EMPTY,
+    temHCHAIN_EMPTY,
     temDISABLED,
     temBAD_SIGNER,
     temBAD_QUORUM,
@@ -119,6 +119,7 @@ enum TEMcodes : TERUnderlyingType {
     temUNKNOWN,    // An internal intermediate result; should never be returned.
 
     temSEQ_AND_TICKET,
+    temBAD_NFTOKEN_TRANSFER_FEE,
 };
 
 //------------------------------------------------------------------------------
@@ -161,6 +162,7 @@ enum TEFcodes : TERUnderlyingType {
     tefINVARIANT_FAILED,
     tefTOO_BIG,
     tefNO_TICKET,
+    tefNFTOKEN_IS_NOT_TRANSFERABLE,
 };
 
 //------------------------------------------------------------------------------
@@ -197,7 +199,7 @@ enum TERcodes : TERUnderlyingType {
     terPRE_SEQ,      // Can't pay fee, no point in forwarding, so don't
                      // burden network.
     terLAST,         // DEPRECATED.
-    terNO_RIPPLE,    // Rippling not allowed
+    terNO_HCHAIN,    // Rippling not allowed
     terQUEUED,       // Transaction is being held in TxQ until fee drops
     terPRE_TICKET,   // Ticket is not yet in ledger but might be on its way
 };
@@ -223,7 +225,7 @@ enum TECcodes : TERUnderlyingType {
     // Note: Exact numbers must stay stable.  These codes are stored by
     // value in metadata for historic transactions.
 
-    // 100 .. 159 C
+    // 100 .. 255 C
     //   Claim fee only (ripple transaction with no good paths, pay to
     //   non-existent account, no path)
     //
@@ -278,7 +280,15 @@ enum TECcodes : TERUnderlyingType {
     tecKILLED = 150,
     tecHAS_OBLIGATIONS = 151,
     tecTOO_SOON = 152,
-    tecHOOK_ERROR [[maybe_unused]] = 153
+    tecHOOK_ERROR [[maybe_unused]] = 153,
+    tecMAX_SEQUENCE_REACHED = 154,
+    tecNO_SUITABLE_NFTOKEN_PAGE = 155,
+    tecNFTOKEN_BUY_SELL_MISMATCH = 156,
+    tecNFTOKEN_OFFER_TYPE_MISMATCH = 157,
+    tecCANT_ACCEPT_OWN_NFTOKEN_OFFER = 158,
+    tecINSUFFICIENT_FUNDS = 159,
+    tecOBJECT_NOT_FOUND = 160,
+    tecINSUFFICIENT_PAYMENT = 161,
 };
 
 //------------------------------------------------------------------------------

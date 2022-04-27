@@ -435,7 +435,7 @@ DirectIPaymentStep::check(
                     ((*sleLine)[sfFlags] &
                      ((src_ > dst_) ? lsfHighNoRipple : lsfLowNoRipple));
                 if (noRippleSrcToDst)
-                    return terNO_RIPPLE;
+                    return terNO_HCHAIN;
             }
         }
     }

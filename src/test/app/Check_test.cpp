@@ -2193,7 +2193,7 @@ class Check_test : public beast::unit_test::suite
             env.close();
             BEAST_EXPECT(
                 env.le(keylet::line(alice, bob, CK1.currency)) == nullptr);
-            env(check::cash(bob, chkId, CK1(97)), ter(terNO_RIPPLE));
+            env(check::cash(bob, chkId, CK1(97)), ter(terNO_HCHAIN));
             env.close();
 
             BEAST_EXPECT(

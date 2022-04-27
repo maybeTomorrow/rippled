@@ -937,7 +937,7 @@ struct PayStrand_test : public beast::unit_test::suite
             env.fund(XRP(10000), alice, bob, noripple(gw));
             env.trust(USD(1000), alice, bob);
             env(pay(gw, alice, USD(100)));
-            test(env, USD, std::nullopt, STPath(), terNO_RIPPLE);
+            test(env, USD, std::nullopt, STPath(), terNO_HCHAIN);
         }
 
         {
