@@ -252,7 +252,7 @@ Payment::preclaim(PreclaimContext const& ctx)
             // TODO: dedupe
             // Another transaction could create the account and then this
             // transaction would succeed.
-            return tecNO_DST_INSUF_XRP;
+            return tecNO_DST_INSUF_HWA;
         }
     }
     else if (
