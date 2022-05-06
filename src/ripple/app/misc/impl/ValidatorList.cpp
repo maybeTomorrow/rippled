@@ -1291,10 +1291,12 @@ ValidatorList::verify(
             publisherManifests_.getSigningKey(pubKey),
             makeSlice(data),
             makeSlice(*sig)))
+            JLOG(j_.warn()) << "validator failed becacuse verify " << pubKey << " " << blob << signature;
         return ListDisposition::invalid;
 
     Json::Reader r;
     if (!r.parse(data, list))
+        JLOG(j_.warn()) << "validator failed becacuse json parse " << data ;
         return ListDisposition::invalid;
 
     if (list.isMember(jss::sequence) && list[jss::sequence].isInt() &&
@@ -1310,6 +1312,7 @@ ValidatorList::verify(
         auto const now = timeKeeper_.now();
         auto const& listCollection = publisherLists_[pubKey];
         if (validUntil <= validFrom)
+            JLOG(j_.warn()) << "validator failed becacuse time valid " << validUntil << "  " << validFrom;
             return ListDisposition::invalid;
         else if (sequence < listCollection.current.sequence)
             return ListDisposition::stale;
@@ -1339,6 +1342,7 @@ ValidatorList::verify(
     }
     else
     {
+         JLOG(j_.warn()) << "validator failed becacuse if json field ";
         return ListDisposition::invalid;
     }
 
