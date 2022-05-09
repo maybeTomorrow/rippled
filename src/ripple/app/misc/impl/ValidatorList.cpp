@@ -1290,14 +1290,15 @@ ValidatorList::verify(
         !ripple::verify(
             publisherManifests_.getSigningKey(pubKey),
             makeSlice(data),
-            makeSlice(*sig)))
-            JLOG(j_.warn()) << "validator failed becacuse verify " << pubKey << " " << blob << signature;
+            makeSlice(*sig))){
+        JLOG(j_.warn()) << "validator failed becacuse verify " << pubKey << " " << blob << signature;    
         return ListDisposition::invalid;
-
+    }
     Json::Reader r;
-    if (!r.parse(data, list))
+    if (!r.parse(data, list)){
         JLOG(j_.warn()) << "validator failed becacuse json parse " << data ;
         return ListDisposition::invalid;
+    }
 
     if (list.isMember(jss::sequence) && list[jss::sequence].isInt() &&
         list.isMember(jss::expiration) && list[jss::expiration].isInt() &&
