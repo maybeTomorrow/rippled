@@ -1312,7 +1312,7 @@ ValidatorList::verify(
         auto const now = timeKeeper_.now();
         auto const& listCollection = publisherLists_[pubKey];
         if (validUntil <= validFrom)
-            JLOG(j_.warn()) << "validator failed becacuse time valid " << validUntil << "  " << validFrom;
+            JLOG(j_.warn()) << "validator failed becacuse time valid " ;
             return ListDisposition::invalid;
         else if (sequence < listCollection.current.sequence)
             return ListDisposition::stale;
