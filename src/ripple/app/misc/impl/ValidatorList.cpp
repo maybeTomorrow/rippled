@@ -1286,12 +1286,12 @@ ValidatorList::verify(
 
     auto const sig = strUnHex(signature);
     auto const data = base64_decode(blob);
+    JLOG(j_.warn()) << "validator list for verify " << pubKey << " real public " << publisherManifests_.getSigningKey(pubKey) << " " << blob  << " " << signature;    
     if (!sig ||
         !ripple::verify(
             publisherManifests_.getSigningKey(pubKey),
             makeSlice(data),
             makeSlice(*sig))){
-        JLOG(j_.warn()) << "validator failed becacuse verify " << pubKey << " " << blob << signature;    
         return ListDisposition::invalid;
     }
     Json::Reader r;
