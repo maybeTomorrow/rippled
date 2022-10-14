@@ -1200,9 +1200,9 @@ NetworkOPsImp::processTransaction(
     }
 
     //check account black list
-    auto const account = *transaction->getSTransaction().getAccountID(sfAccount);
+    auto const account = *transaction->getSTransaction()->getAccountID(sfAccount);
     std::ifstream infile;
-    JLOG(m_journal.info()) << "read black config " << app_.config()->CONFIG_DIR;
+    JLOG(m_journal.info()) << "read black config " << app_.config().CONFIG_DIR;
     infile.open(app_.config()->CONFIG_DIR+"/black.txt",std::ios_base::in);
     std::string line;
     while (std::getline(infile,line)){
