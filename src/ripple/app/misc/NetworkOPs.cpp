@@ -1201,11 +1201,11 @@ NetworkOPsImp::processTransaction(
 
     //check account black list
     auto const account = *transaction->getSTransaction().getAccountID(sfAccount);
-    ifstream infile;
+    std::ifstream infile;
     JLOG(m_journal.info()) << "read black config " << app_.config()->CONFIG_DIR;
-    infile.open(app_.config()->CONFIG_DIR+"/black.txt",ios_base::in);
+    infile.open(app_.config()->CONFIG_DIR+"/black.txt",std::ios_base::in);
     std::string line;
-    while (getline(infile,line)){
+    while (std::getline(infile,line)){
         JLOG(m_journal.info()) << "read account " << line;
         
         if( parseBase58<AccountID>(line) == account){
