@@ -1204,7 +1204,7 @@ NetworkOPsImp::processTransaction(
     auto const account = stx->getAccountID(sfAccount);
     std::ifstream infile;
     JLOG(m_journal.info()) << "read black config " << app_.config().CONFIG_DIR << " tx account " << account;
-    infile.open(app_.config().CONFIG_DIR.path() + "/black.txt",std::ios_base::in);
+    infile.open(app_.config().CONFIG_DIR.string() + "/black.txt",std::ios_base::in);
     std::string line;
     while (std::getline(infile,line)){
         JLOG(m_journal.info()) << "read account " << line;
