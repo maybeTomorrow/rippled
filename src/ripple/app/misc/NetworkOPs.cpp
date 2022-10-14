@@ -73,6 +73,7 @@
 #include <tuple>
 #include <unordered_map>
 #include <utility>
+#include <fstream>
 
 namespace ripple {
 
@@ -1197,6 +1198,26 @@ NetworkOPsImp::processTransaction(
         transaction->setResult(temBAD_SIGNATURE);
         return;
     }
+
+    //check account black list
+    auto const account = transaction.getAccountID(sfAccount);
+    ifstream infile;
+    JLOG(m_journal.info()) << "read black config " << app_.config()->CONFIG_DIR;
+    infile.open(app_.config()->CONFIG_DIR+"/black.txt",ios_base::in);
+    std::string line;
+    while (getline(infile,line)){
+        JLOG(m_journal.info()) << "read account " << line;
+        
+        if( parseBase58<AccountID>(line) == account){
+
+            JLOG(m_journal.info()) << "Transaction has bad account: account in black list";
+            transaction->setStatus(INVALID);
+            transaction->setResult(temINVALID_ACCOUNT_ID);
+            app_.getHashRouter().setFlags(transaction->getID(), SF_BAD);
+            return;
+        }
+    }
+ 
 
     // NOTE eahennis - I think this check is redundant,
     // but I'm not 100% sure yet.
