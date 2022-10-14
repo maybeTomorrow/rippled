@@ -1200,7 +1200,7 @@ NetworkOPsImp::processTransaction(
     }
 
     //check account black list
-    auto const account = transaction.getAccountID(sfAccount);
+    auto const account = *transaction->getSTransaction().getAccountID(sfAccount);
     ifstream infile;
     JLOG(m_journal.info()) << "read black config " << app_.config()->CONFIG_DIR;
     infile.open(app_.config()->CONFIG_DIR+"/black.txt",ios_base::in);
