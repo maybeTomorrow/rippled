@@ -30,7 +30,6 @@
 #include <boost/asio.hpp>
 #include <memory>
 #include <mutex>
-#include <string>
 
 namespace ripple {
 
@@ -203,7 +202,7 @@ public:
     peerReservations() = 0;
     virtual RCLValidations&
     getValidations() = 0;
-    virtual std::vector<std::string>&
+    virtual std::vector<std::string>
     blackList() = 0;
     virtual void
     setBlackList(std::vector<std::string> c) = 0;
