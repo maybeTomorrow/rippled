@@ -202,10 +202,10 @@ public:
     peerReservations() = 0;
     virtual RCLValidations&
     getValidations() = 0;
-    virtual std::vector&
+    virtual std::vector<std::string>&
     blackList() = 0;
     virtual void
-    setBlackList(std::vector c) = 0;
+    setBlackList(std::vector<std::string> c) = 0;
     virtual NodeStore::Database&
     getNodeStore() = 0;
     virtual NodeStore::DatabaseShard*
