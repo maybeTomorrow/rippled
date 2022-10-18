@@ -224,12 +224,7 @@ public:
     std::unique_ptr<Overlay> overlay_;
     std::vector<std::string> blackList_;
 
-    std::vector<std::string> blackList(){
-      return blackList_;
-    }
-    void setBlackList(std::vector<std::string> c){
-      blackList_=c;
-    }
+
 
     boost::asio::signal_set m_signals;
 
@@ -533,6 +528,12 @@ public:
     fdRequired() const override;
 
     //--------------------------------------------------------------------------
+    std::vector<std::string> blackList(){
+      return blackList_;
+    }
+    void setBlackList(std::vector<std::string> c){
+      blackList_=c;
+    }
 
     Logs&
     logs() override

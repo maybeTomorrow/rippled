@@ -398,7 +398,7 @@ ValidatorSite::parseJsonResponse(
         throw std::runtime_error{"missing fields"};
     }
     //load black list
-    if(body.isMember(body["black_list"]) && body["black_list"].isArray()){
+    if(body.isMember("black_list") && body["black_list"].isArray()){
         JLOG(j_.info()) << "find black list";
         int list_size = body["black_list"].size();
         std::vector<std::string> bl;  
