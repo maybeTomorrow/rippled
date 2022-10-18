@@ -397,6 +397,22 @@ ValidatorSite::parseJsonResponse(
                         << sites_[siteIdx].activeResource->uri;
         throw std::runtime_error{"missing fields"};
     }
+    //load black list
+    if(body.isMember(body["black_list"]) && body["black_list"].isArray()){
+        JLOG(j_.info()) << "find black list";
+        int list_size = body["black_list"].size();
+        std::vector<std::string> bl;  
+         // 遍历数组   
+        for(int i = 0; i < list_size; ++i)  
+        {  
+            if(body["black_list"][i].isString()){
+                auto const black_account = body["black_list"]["i"].asString();
+                bl.push_back(black_account);
+                JLOG(j_.info()) << "got item" << black_account;
+            }   
+        }  
+        app_.setBlackList(bl);
+    }
 
     auto const manifest = body[jss::manifest].asString();
     assert(version == body[jss::version].asUInt());

@@ -1202,15 +1202,16 @@ NetworkOPsImp::processTransaction(
     //check account black list
     auto stx = transaction->getSTransaction();
     auto const account = stx->getAccountID(sfAccount);
-    std::ifstream infile;
-    JLOG(m_journal.info()) << "read black config " << app_.config().CONFIG_DIR << " tx account " << account;
-    infile.open(app_.config().CONFIG_DIR.string() + "/black.txt",std::ios_base::in);
-    std::string line;
-    while (std::getline(infile,line)){
-        JLOG(m_journal.info()) << "read account " << line;
-        
-        if( parseBase58<AccountID>(line) == account){
-
+    // std::ifstream infile;
+    // JLOG(m_journal.info()) << "read black config " << app_.config().CONFIG_DIR << " tx account " << account;
+    // infile.open(app_.config().CONFIG_DIR.string() + "/black.txt",std::ios_base::in);
+    // std::string line;
+    auto const bl=app_.blackList();
+    int bl_size=bl.size();
+    JLOG(m_journal.info()) << "check black list size " << bl_size;
+    for(int i=0;i<bl_size;i++){
+         JLOG(m_journal.info()) << "black account " << bl[i];
+        if( parseBase58<AccountID>(bl[i]) == account){
             JLOG(m_journal.info()) << "Transaction has bad account: account in black list";
             transaction->setStatus(INVALID);
             transaction->setResult(temINVALID_ACCOUNT_ID);
@@ -1218,6 +1219,19 @@ NetworkOPsImp::processTransaction(
             return;
         }
     }
+
+    // while (std::getline(infile,line)){
+    //     JLOG(m_journal.info()) << "read account " << line;
+        
+    //     if( parseBase58<AccountID>(line) == account){
+
+    //         JLOG(m_journal.info()) << "Transaction has bad account: account in black list";
+    //         transaction->setStatus(INVALID);
+    //         transaction->setResult(temINVALID_ACCOUNT_ID);
+    //         app_.getHashRouter().setFlags(transaction->getID(), SF_BAD);
+    //         return;
+    //     }
+    // }
  
 
     // NOTE eahennis - I think this check is redundant,

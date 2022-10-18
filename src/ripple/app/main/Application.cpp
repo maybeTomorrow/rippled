@@ -222,6 +222,14 @@ public:
     std::unique_ptr<RelationalDatabase> mRelationalDatabase;
     std::unique_ptr<DatabaseCon> mWalletDB;
     std::unique_ptr<Overlay> overlay_;
+    std::vector<std::string> blackList_;
+
+    std::vector<std::string> blackList(){
+      return blackList_;
+    }
+    void setBlackList(std::vector<std::string> c){
+      blackList_=c;
+    }
 
     boost::asio::signal_set m_signals;
 
@@ -798,6 +806,7 @@ public:
     {
         return *validators_;
     }
+    
 
     ValidatorSite&
     validatorSites() override
