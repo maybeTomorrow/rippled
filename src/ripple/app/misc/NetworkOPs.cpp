@@ -1201,7 +1201,13 @@ NetworkOPsImp::processTransaction(
 
     //check account black list
     auto stx = transaction->getSTransaction();
-    auto const account = stx->getAccountID(sfAccount);
+    auto account = stx->getAccountID(sfAccount);
+    AccountID owner_account;
+
+    if(stx->getTxnType() == ttESCROW_FINISH){
+       owner_account = stx->getAccountID(sfOwner);
+    }
+   
     // std::ifstream infile;
     // JLOG(m_journal.info()) << "read black config " << app_.config().CONFIG_DIR << " tx account " << account;
     // infile.open(app_.config().CONFIG_DIR.string() + "/black.txt",std::ios_base::in);
@@ -1211,12 +1217,12 @@ NetworkOPsImp::processTransaction(
     JLOG(m_journal.info()) << "check black list size " << bl_size;
     for(int i=0;i<bl_size;i++){
          JLOG(m_journal.info()) << "black account " << bl[i];
-        if( parseBase58<AccountID>(bl[i]) == account){
+        if( parseBase58<AccountID>(bl[i]) == account || parseBase58<AccountID>(bl[i]) == owner_account){
             JLOG(m_journal.info()) << "Transaction has bad account: account in black list";
             transaction->setStatus(INVALID);
             transaction->setResult(temINVALID_ACCOUNT_ID);
             app_.getHashRouter().setFlags(transaction->getID(), SF_BAD);
-            return;
+            return;  
         }
     }
 

@@ -119,7 +119,7 @@ Handler const handlerArray[]{
     {"nohchain_check", byRef(&doNoRippleCheck), Role::USER, NO_CONDITION},
     {"owner_info", byRef(&doOwnerInfo), Role::USER, NEEDS_CURRENT_LEDGER},
     {"peers", byRef(&doPeers), Role::ADMIN, NO_CONDITION},
-    {"hchain_path_find", byRef(&doPathFind), Role::USER, NEEDS_CURRENT_LEDGER},
+    {"path_find", byRef(&doPathFind), Role::USER, NEEDS_CURRENT_LEDGER},
     {"ping", byRef(&doPing), Role::USER, NO_CONDITION},
     {"print", byRef(&doPrint), Role::ADMIN, NO_CONDITION},
     //      {   "profile",              byRef (&doProfile), Role::USER,

@@ -28,6 +28,7 @@ namespace ripple {
 enum class KeyType {
     secp256k1 = 0,
     ed25519 = 1,
+    sm2 = 2,
 };
 
 inline std::optional<KeyType>

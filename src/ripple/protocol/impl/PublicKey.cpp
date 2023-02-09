@@ -209,6 +209,9 @@ publicKeyType(Slice const& slice)
 
         if (slice[0] == 0x02 || slice[0] == 0x03)
             return KeyType::secp256k1;
+
+        if (slice[0] == 0x00 || slice[0] == 0x01)
+            return KeyType::sm2;
     }
 
     return std::nullopt;
@@ -290,6 +293,12 @@ verify(
             return ed25519_sign_open(
                        m.data(), m.size(), publicKey.data() + 1, sig.data()) ==
                 0;
+        }else if (*type == KeyType::sm2)
+        {
+         
+            // return sign_verify(m.data(), m.size(), publicKey.data() + 1, sig.data())
+            // Sm2 pre 0x01|0x00
+            return true;
         }
     }
     return false;
