@@ -27,6 +27,7 @@
 #include <ripple/protocol/impl/secp256k1.h>
 #include <cstring>
 #include <ed25519-donna/ed25519.h>
+#include <gm/gm.h>
 
 namespace ripple {
 
@@ -272,6 +273,12 @@ sign(PublicKey const& pk, SecretKey const& sk, Slice const& m)
 
             return Buffer{sig, len};
         }
+        case KeyType::sm2: {
+            unsigned char sig[72];
+            size_t len = sizeof(sig);
+            sm2_sign_generate(sk.data(),m.data(),m.size(),sig,&len);
+            return Buffer{sig, len};
+        }
         default:
             LogicError("sign: invalid type");
     }
@@ -340,6 +347,11 @@ derivePublicKey(KeyType type, SecretKey const& sk)
             unsigned char buf[33];
             buf[0] = 0xED;
             ed25519_publickey(sk.data(), &buf[1]);
+            return PublicKey(Slice{buf, sizeof(buf)});
+        }
+        case KeyType::sm2: {
+            unsigned char buf[33];
+            sm2_pubkey_create_compress(buf,sk.data());
             return PublicKey(Slice{buf, sizeof(buf)});
         }
         default:

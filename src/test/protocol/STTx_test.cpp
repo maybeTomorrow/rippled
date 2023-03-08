@@ -59,6 +59,9 @@ public:
         testcase("ed25519 signatures");
         testSTTx(KeyType::ed25519);
 
+        testcase("sm2 signatures");
+        testSTTx(KeyType::sm2);
+
         testcase("STObject constructor errors");
         testObjectCtorErrors();
     }

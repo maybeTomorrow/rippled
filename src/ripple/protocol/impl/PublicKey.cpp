@@ -24,6 +24,7 @@
 #include <ripple/protocol/impl/secp256k1.h>
 #include <boost/multiprecision/cpp_int.hpp>
 #include <ed25519-donna/ed25519.h>
+#include <gm/gm.h>
 #include <type_traits>
 
 namespace ripple {
@@ -298,7 +299,7 @@ verify(
          
             // return sign_verify(m.data(), m.size(), publicKey.data() + 1, sig.data())
             // Sm2 pre 0x01|0x00
-            return true;
+            return sm2_sign_verify(m.data(),m.size(),publicKey.data() ,sig.data());
         }
     }
     return false;

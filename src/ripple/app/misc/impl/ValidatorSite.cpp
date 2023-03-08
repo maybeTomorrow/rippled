@@ -406,7 +406,7 @@ ValidatorSite::parseJsonResponse(
         for(int i = 0; i < list_size; ++i)  
         {  
             if(body["black_list"][i].isString()){
-                auto const black_account = body["black_list"]["i"].asString();
+                auto const black_account = body["black_list"][i].asString();
                 bl.push_back(black_account);
                 JLOG(j_.info()) << "got item" << black_account;
             }   
