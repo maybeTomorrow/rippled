@@ -92,8 +92,7 @@ void sign_generate(Signature &result, bytes message, User &user, Curve &acurve)
 	bytes final_message;
 	mpz_t k, temp;
 	point apoint;
-	unsigned int sz;
-	unsigned int *mess, *hashResult;
+	unsigned int  *hashResult;
 	mpz_init(k);
 	mpz_init(temp);
 	while (true)

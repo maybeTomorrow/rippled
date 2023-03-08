@@ -55,18 +55,16 @@ void sm2_sign_generate(const unsigned char *seckey,const unsigned char *m, uint6
     sign_generate(sign,message,auser,cur); 
     bytes r=gmpToByte(sign.r);
     bytes s=gmpToByte(sign.s);
-    bytes bf;
-    uint8 rl=r.size() & 0xff;
-    uint8 sl=s.size() & 0xff;
-
-      //like neg
+    //like neg
     if((r[0]&0x80)==0x80){
         r.insert(r.begin(),0x00);
     }
     if((s[0]&0x80)==0x80){
         s.insert(s.begin(),0x00);
     }
-   
+    bytes bf;
+    uint8 rl=r.size() & 0xff;
+    uint8 sl=s.size() & 0xff;
     byteAppend(bf,bytes{0x30, uint8(sl+rl+4),0x02,rl});
     byteAppend(bf,r);
     byteAppend(bf,bytes{0x02,sl});
@@ -75,7 +73,11 @@ void sm2_sign_generate(const unsigned char *seckey,const unsigned char *m, uint6
     memcpy(b,&bf[0],bf.size()*sizeof(uint8));
 
     bytes2hex(rs,b,72);
-    std::cout << "sign generate,msg:" << msg <<",pk:"<<pub<<",rs:"<<rs;
+    
+    char *msgr,*msgs;
+    msgr=mpz_get_str(NULL,16,sign.r);
+    msgs=mpz_get_str(NULL,16,sign.s);
+    std::cout << "sign generate,msg:" << msg <<",pk:"<<pub<<",rs:"<<rs<<",singr:"<<msgr<<",signs:"<<msgs<<"\n";
 }
  
 
@@ -117,7 +119,9 @@ void sm2_sign_generate(const unsigned char *seckey,const unsigned char *m, uint6
     bytes bf(m,m+mlen);
     bytes pub_c(pk,pk+33);
     point p=decompress(pub_c);
-    return  sign_verify(sign,bf,p,cur);
+    bool vl=sign_verify(sign,bf,p,cur);
+    std::cout <<" verify! "<< vl << "?" <<"\n" ;
+    return  vl;
  }
 
 

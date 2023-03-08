@@ -27,7 +27,6 @@ std::vector<unsigned char> gmpToByte(mpz_t mess)
 	std::vector<unsigned char> buffer;
 
 	unsigned long length = mpz_sizeinbase(mess, 2);
-	unsigned long temp = length;
 	int bit;
 	int index = 0;
 	unsigned char a = 0;
@@ -262,7 +261,7 @@ void pointToGmp(mpz_t result, point &p, mpz_t Fq)
 	mpz_init_set(Y1, p.y);
 	unsigned long t = mpz_sizeinbase(Fq, 2);
 	unsigned long l = (t + 7) >> 3;
-	int y = mpz_tstbit(p.y, 0); // 点的y坐标最右一比特
+	// int y = mpz_tstbit(p.y, 0); // 点的y坐标最右一比特
 	mpz_mul_2exp(result, X1, 8 * l);
 	mpz_xor(result, result, Y1);
 	mpz_setbit(result, 16 * l + 2);
@@ -286,7 +285,7 @@ void gmpToPoint(point &result, mpz_t bitstring, Curve &acurve)
 		if (mpz_tstbit(bitstring, end--))
 			pc++;
 	}
-	bool y;
+	// bool y;
 	if (pc != 4)
 		exit(1);
 	mpz_t yy;
