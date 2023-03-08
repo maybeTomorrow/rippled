@@ -2,7 +2,10 @@ include_directories(${PROJECT_BINARY_DIR})
 
 add_subdirectory(src/gm)
 
-target_link_libraries(ripple_libs INTERFACE gm)
+add_library(SmCrypto::gm ALIAS gm)
+
+target_link_libraries(ripple_libs INTERFACE SmCrypto::gm)
+
 
 
 

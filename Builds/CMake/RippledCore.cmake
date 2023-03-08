@@ -138,7 +138,7 @@ target_link_libraries (xrpl_core
     Ripple::syslibs
     NIH::secp256k1
     NIH::ed25519-donna
-    Gm
+    SmCrypto::gm
     date::date
     Ripple::opts)
 #[=================================[

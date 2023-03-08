@@ -6,7 +6,8 @@ enable_testing()
 
 
 
-add_library(gm gm.cpp signature.cpp convert.cpp p256.cpp sm3.cpp)
+add_library(gm STATIC gm.cpp signature.cpp convert.cpp p256.cpp sm3.cpp)
+
 
 
 
