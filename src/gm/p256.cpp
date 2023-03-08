@@ -747,7 +747,6 @@ void modSqrt(mpz_t rs, mpz_t x, mpz_t p)
 point decompress(std::vector<unsigned char> buf)
 {
     mpz_t pub;
-    unsigned char lastb = buf[0];
     std::vector<unsigned char> c;
     for (int i = 1; i < 33; i++)
     {
