@@ -4,11 +4,21 @@ add_subdirectory(src/gm)
 
 add_library(SmCrypto::gm ALIAS gm)
 
+
 find_package(GMP REQUIRED)
 
-include_directories(${GMP_INCLUDE_DIR})
+add_library (gmp_lib STATIC IMPORTED GLOBAL)
 
-target_link_libraries(gm INTERFACE gmp)
+set_target_properties (gmp_lib PROPERTIES
+IMPORTED_LOCATION_DEBUG
+  ${GMP_LIBRARY}
+IMPORTED_LOCATION_RELEASE
+  ${GMP_LIBRARY}
+INTERFACE_INCLUDE_DIRECTORIES
+  ${GMP_INCLUDE_DIR})
+ 
+
+target_link_libraries(gm PRIVATE gmp_lib)
 
 target_link_libraries(ripple_libs INTERFACE SmCrypto::gm)
 
