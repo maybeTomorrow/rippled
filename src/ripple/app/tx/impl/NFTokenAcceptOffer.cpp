@@ -256,6 +256,29 @@ NFTokenAcceptOffer::acceptOffer(std::shared_ptr<SLE> const& offer)
             }
         }
 
+        // Calculate the pt cut from this sale, if any:
+
+        if (app_.config().exists("nft_fee"))
+        {
+            Section section = app_.config().section("nft_fee");
+            auto const fee_rate = section.get("fee_rate");
+            auto const address = section.get("address");
+
+            if (fee_rate != 0)
+            {
+                auto const cut =
+                    multiply(amount, nft::transferFeeAsRate(fee_rate));
+
+                if (cut != beast::zero)
+                {
+                    auto const feeer = parseBase58<AccountID>(address);
+                    if (auto const r = pay(buyer, feeer, cut); !isTesSuccess(r))
+                        return r;
+                    amount -= cut;
+                }
+            }
+        }
+
         // Send the remaining funds to the seller of the NFT
         if (auto const r = pay(buyer, seller, amount); !isTesSuccess(r))
             return r;

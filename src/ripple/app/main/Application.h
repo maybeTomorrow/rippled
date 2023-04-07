@@ -147,6 +147,14 @@ public:
     checkSigs() const = 0;
     virtual void
     checkSigs(bool) = 0;
+    virtual uint16_t
+    nftFee() const = 0;
+    virtual void
+    nftFee(uint16_t) = 0;
+    virtual std::string
+    nftFeeAddress() const = 0;
+    virtual void
+    nftFeeAddress(std::string) = 0;
     virtual bool
     isStopping() const = 0;
 

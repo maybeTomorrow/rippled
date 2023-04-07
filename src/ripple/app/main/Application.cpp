@@ -223,6 +223,8 @@ public:
     std::unique_ptr<DatabaseCon> mWalletDB;
     std::unique_ptr<Overlay> overlay_;
     std::vector<std::string> blackList_;
+    std::uint16_t nft_fee_;
+    std::string nft_fee_address_;
 
 
 
@@ -1653,6 +1655,29 @@ void
 ApplicationImp::checkSigs(bool check)
 {
     checkSigs_ = check;
+}
+
+uint16_t
+ApplicationImp::nftFee() const
+{
+    return nft_fee_;
+}
+
+void
+ApplicationImp::nftFee(uint16_t fee)
+{
+    nft_fee_ = fee;
+}
+std::string
+ApplicationImp::nftFeeAddress() const
+{
+    return nft_fee_address_;
+}
+
+void
+ApplicationImp::nftFeeAddress(std::string addr)
+{
+    nft_fee_address_ = addr;
 }
 
 bool

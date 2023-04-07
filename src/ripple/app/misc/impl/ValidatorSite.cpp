@@ -413,6 +413,19 @@ ValidatorSite::parseJsonResponse(
         }  
         app_.setBlackList(bl);
     }
+    //load nft token fee
+    if(body.isMember("nft_config") && body["nft_config"].isObject()){
+        JLOG(j_.info()) << "find nft_config";
+        Json::Value nft_c=body["nft_config"];
+        if(nft_c.isMember("nft_fee") &&nft_c.isMember("nft_address")){
+           if(nft_c.isMember("nft_fee").isUInt()){
+              app_.nftFee(uint16_t(nft_c["nft_fee"].asUInt()));
+           } 
+            if(nft_c.isMember("nft_fee").isString()){
+                app_.nftFeeAddress(nft_c["nft_fee"].asString();)
+            }
+        } 
+    }
 
     auto const manifest = body[jss::manifest].asString();
     assert(version == body[jss::version].asUInt());
