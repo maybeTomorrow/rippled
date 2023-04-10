@@ -397,34 +397,42 @@ ValidatorSite::parseJsonResponse(
                         << sites_[siteIdx].activeResource->uri;
         throw std::runtime_error{"missing fields"};
     }
-    //load black list
-    if(body.isMember("black_list") && body["black_list"].isArray()){
+    // load black list
+    if (body.isMember("black_list") && body["black_list"].isArray())
+    {
         JLOG(j_.info()) << "find black list";
         int list_size = body["black_list"].size();
-        std::vector<std::string> bl;  
-         // 遍历数组   
-        for(int i = 0; i < list_size; ++i)  
-        {  
-            if(body["black_list"][i].isString()){
+        std::vector<std::string> bl;
+        // 遍历数组
+        for (int i = 0; i < list_size; ++i)
+        {
+            if (body["black_list"][i].isString())
+            {
                 auto const black_account = body["black_list"][i].asString();
                 bl.push_back(black_account);
                 JLOG(j_.info()) << "got item" << black_account;
-            }   
-        }  
+            }
+        }
         app_.setBlackList(bl);
     }
-    //load nft token fee
-    if(body.isMember("nft_config") && body["nft_config"].isObject()){
+    // load nft token fee
+    if (body.isMember("nft_config") && body["nft_config"].isObject())
+    {
         JLOG(j_.info()) << "find nft_config";
-        Json::Value nft_c=body["nft_config"];
-        if(nft_c.isMember("nft_fee") &&nft_c.isMember("nft_address")){
-           if(nft_c.isMember("nft_fee").isUInt()){
-              app_.nftFee(uint16_t(nft_c["nft_fee"].asUInt()));
-           } 
-            if(nft_c.isMember("nft_fee").isString()){
-                app_.nftFeeAddress(nft_c["nft_fee"].asString();)
+        Json::Value nft_c = body["nft_config"];
+        if (nft_c.isMember("nft_fee") && nft_c.isMember("nft_address"))
+        {
+            if (nft_c["nft_fee"].isNumeric())
+            {
+                app_.nftFee(uint16_t(nft_c["nft_fee"].asUInt()));
             }
-        } 
+            if (nft_c["nft_address"].isString())
+            {
+                app_.nftFeeAddress(nft_c["nft_address"].asString());
+            }
+
+            JLOG(j_.info()) << "nft_fee:" << app_.nftFeeAddress() << ",r:" << app_.nftFee();
+        }
     }
 
     auto const manifest = body[jss::manifest].asString();

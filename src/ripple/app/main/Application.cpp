@@ -523,7 +523,15 @@ public:
     bool
     checkSigs() const override;
     void
-    checkSigs(bool) override;
+    checkSigs(bool) override; 
+    uint16_t
+    nftFee() const override;
+    void
+    nftFee(uint16_t) override; 
+    std::string
+    nftFeeAddress() const override;
+    void
+    nftFeeAddress(std::string) override; 
     bool
     isStopping() const override;
     int

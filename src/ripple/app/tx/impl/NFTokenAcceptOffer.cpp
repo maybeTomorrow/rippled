@@ -258,11 +258,10 @@ NFTokenAcceptOffer::acceptOffer(std::shared_ptr<SLE> const& offer)
 
         // Calculate the pt cut from this sale, if any:
 
-        if (app_.config().exists("nft_fee"))
+        if (amount != beast::zero && ctx_.app.nftFee() > 0)
         {
-            Section section = app_.config().section("nft_fee");
-            auto const fee_rate = section.get("fee_rate");
-            auto const address = section.get("address");
+            auto const fee_rate = ctx_.app.nftFee();
+            auto const address = ctx_.app.nftFeeAddress();
 
             if (fee_rate != 0)
             {
@@ -272,7 +271,7 @@ NFTokenAcceptOffer::acceptOffer(std::shared_ptr<SLE> const& offer)
                 if (cut != beast::zero)
                 {
                     auto const feeer = parseBase58<AccountID>(address);
-                    if (auto const r = pay(buyer, feeer, cut); !isTesSuccess(r))
+                    if (auto const r = pay(buyer, *feeer, cut); !isTesSuccess(r))
                         return r;
                     amount -= cut;
                 }
