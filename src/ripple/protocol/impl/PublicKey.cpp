@@ -23,7 +23,7 @@
 #include <ripple/protocol/digest.h>
 #include <ripple/protocol/impl/secp256k1.h>
 #include <boost/multiprecision/cpp_int.hpp>
-#include <ed25519-donna/ed25519.h>
+#include <ed25519.h>
 #include <gm/gm.h>
 #include <type_traits>
 
@@ -187,14 +187,18 @@ PublicKey::PublicKey(PublicKey const& other) : size_(other.size_)
 {
     if (size_)
         std::memcpy(buf_, other.buf_, size_);
-};
+}
 
 PublicKey&
 PublicKey::operator=(PublicKey const& other)
 {
-    size_ = other.size_;
-    if (size_)
-        std::memcpy(buf_, other.buf_, size_);
+    if (this != &other)
+    {
+        size_ = other.size_;
+        if (size_)
+            std::memcpy(buf_, other.buf_, size_);
+    }
+
     return *this;
 }
 

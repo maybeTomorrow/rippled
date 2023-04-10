@@ -25,22 +25,21 @@ namespace ripple {
 class ProtocolVersion_test : public beast::unit_test::suite
 {
 private:
-    template <class FwdIt>
-    static std::string
-    join(FwdIt first, FwdIt last, char const* sep = ",")
-    {
-        std::string result;
-        if (first == last)
-            return result;
-        result = to_string(*first++);
-        while (first != last)
-            result += sep + to_string(*first++);
-        return result;
-    }
-
     void
     check(std::string const& s, std::string const& answer)
     {
+        auto join = [](auto first, auto last) {
+            std::string result;
+            if (first != last)
+            {
+                result = to_string(*first++);
+
+                while (first != last)
+                    result += "," + to_string(*first++);
+            }
+            return result;
+        };
+
         auto const result = parseProtocolVersions(s);
         BEAST_EXPECT(join(result.begin(), result.end()) == answer);
     }
@@ -60,20 +59,21 @@ public:
 
             // Empty string
             check("", "");
+
+            // clang-format off
             check(
-                "RTXP/1.1,RTXP/1.2,RTXP/1.3,HWAL/2.1,HWAL/2.0",
+                "RTXP/1.1,RTXP/1.2,RTXP/1.3,HWAL/2.1,HWAL/2.0,/HWAL/3.0",
                 "HWAL/2.0,HWAL/2.1");
             check(
-                "RTXP/0.9,RTXP/1.01,HWAL/0.3,HWAL/2.01,HWAL/19.04,Oscar/"
-                "123,NIKB",
+                "RTXP/0.9,RTXP/1.01,HWAL/0.3,HWAL/2.01,websocket",
                 "");
             check(
-                "HWAL/2.0,RTXP/1.2,HWAL/2.0,HWAL/19.4,HWAL/7.89,HWAL/"
-                "A.1,HWAL/2.01",
+                "HWAL/2.0,HWAL/2.0,HWAL/19.4,HWAL/7.89,HWAL/HWAL/3.0,HWAL/2.01",
                 "HWAL/2.0,HWAL/7.89,HWAL/19.4");
             check(
                 "HWAL/2.0,HWAL/3.0,HWAL/4,HWAL/,HWAL,OPT HWAL/2.2,HWAL/5.67",
                 "HWAL/2.0,HWAL/3.0,HWAL/5.67");
+            // clang-format on
         }
 
         {
@@ -81,13 +81,14 @@ public:
 
             BEAST_EXPECT(negotiateProtocolVersion("RTXP/1.2") == std::nullopt);
             BEAST_EXPECT(
-                negotiateProtocolVersion("RTXP/1.2, HWAL/2.0") ==
-                make_protocol(2, 0));
+                negotiateProtocolVersion("RTXP/1.2, HWAL/2.0, HWAL/2.1") ==
+                make_protocol(2, 1));
             BEAST_EXPECT(
-                negotiateProtocolVersion("HWAL/2.0") == make_protocol(2, 0));
+                negotiateProtocolVersion("HWAL/2.2") == make_protocol(2, 2));
             BEAST_EXPECT(
-                negotiateProtocolVersion("RTXP/1.2, HWAL/2.0, HWAL/999.999") ==
-                make_protocol(2, 0));
+                negotiateProtocolVersion(
+                    "RTXP/1.2, HWAL/2.2, HWAL/2.3, HWAL/999.999") ==
+                make_protocol(2, 2));
             BEAST_EXPECT(
                 negotiateProtocolVersion("HWAL/999.999, WebSocket/1.0") ==
                 std::nullopt);
