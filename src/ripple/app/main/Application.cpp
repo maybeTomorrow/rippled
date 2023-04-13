@@ -539,7 +539,11 @@ public:
     std::string
     nftFeeAddress() const override;
     void
-    nftFeeAddress(std::string) override; 
+    nftFeeAddress(std::string) override;
+    void 
+    blackList(std::vector<std::string>) override;
+    std::vector<std::string> 
+    blackList()  override; 
     bool
     isStopping() const override;
     int
@@ -553,12 +557,7 @@ public:
         return instanceCookie_;
     }
     
-    std::vector<std::string> blackList(){
-      return blackList_;
-    }
-    void setBlackList(std::vector<std::string> c){
-      blackList_=c;
-    }
+   
 
     Logs&
     logs() override
@@ -1704,6 +1703,17 @@ void
 ApplicationImp::nftFeeAddress(std::string addr)
 {
     nft_fee_address_ = addr;
+}
+
+
+std::vector<std::string> 
+ApplicationImp::blackList(){
+      return blackList_;
+}
+
+void 
+ApplicationImp::blackList(std::vector<std::string> c){
+      blackList_=c;
 }
 
 bool

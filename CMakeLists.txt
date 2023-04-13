@@ -73,6 +73,7 @@ set_target_properties(OpenSSL::SSL PROPERTIES
 )
 add_subdirectory(src/secp256k1)
 add_subdirectory(src/ed25519-donna)
+add_subdirectory(src/gm)
 find_package(lz4 REQUIRED)
 # Target names with :: are not allowed in a generator expression.
 # We need to pull the include directories and imported location properties
@@ -109,6 +110,7 @@ target_link_libraries(ripple_libs INTERFACE
   secp256k1::secp256k1
   soci::soci
   SQLite::SQLite3
+  SmCrypto::gm
 )
 
 if(reporting)

@@ -36,6 +36,7 @@ class Xrpl(ConanFile):
         'soci/4.0.3',
         'sqlite3/3.38.0',
         'zlib/1.2.12',
+        'gmp/6.2.1',
     ]
 
     default_options = {
@@ -146,4 +147,5 @@ class Xrpl(ConanFile):
             'libxrpl_core.a',
             'libed25519-donna.a',
             'libsecp256k1.a',
+            'libgm.a',
         ]

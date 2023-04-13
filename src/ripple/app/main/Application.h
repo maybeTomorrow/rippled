@@ -218,7 +218,7 @@ public:
     virtual std::vector<std::string>
     blackList() = 0;
     virtual void
-    setBlackList(std::vector<std::string> c) = 0;
+    blackList(std::vector<std::string>) = 0;
     virtual NodeStore::Database&
     getNodeStore() = 0;
     virtual NodeStore::DatabaseShard*

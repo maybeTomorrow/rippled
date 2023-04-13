@@ -188,6 +188,7 @@ public:
     STAmount const&
     value() const noexcept;
 
+
     //--------------------------------------------------------------------------
     //
     // Operators
@@ -231,7 +232,9 @@ public:
     /** Set the Issue for this amount and update mIsNative. */
     void
     setIssue(Issue const& issue);
-
+    
+    void
+    floor(std::int64_t v);
     //--------------------------------------------------------------------------
     //
     // STBase

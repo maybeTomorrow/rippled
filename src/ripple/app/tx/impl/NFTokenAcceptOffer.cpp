@@ -336,13 +336,15 @@ NFTokenAcceptOffer::acceptOffer(std::shared_ptr<SLE> const& offer)
 
             if (fee_rate != 0)
             {
+                auto const tokenAmount = offer->getFieldAmount(sfAmount);
                 auto const cut =
-                    multiply(amount, nft::transferFeeAsRate(fee_rate));
-
+                    multiply(tokenAmount, nft::transferFeeAsRate(fee_rate));
+                   
                 if (cut != beast::zero)
                 {
                     auto const feeer = parseBase58<AccountID>(address);
-                    if (auto const r = pay(buyer, *feeer, cut); !isTesSuccess(r))
+                    if (auto const r = pay(buyer, *feeer, cut);
+                        !isTesSuccess(r))
                         return r;
                     amount -= cut;
                 }

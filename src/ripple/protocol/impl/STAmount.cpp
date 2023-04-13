@@ -825,6 +825,21 @@ STAmount::set(std::int64_t v)
     }
 }
 
+void
+STAmount::floor(std::int64_t v)
+{
+    std::int64_t i=mOffset+v;
+    std::int64_t j=i;
+    while(i<0){
+        mValue/=10;
+        i++;
+    }
+    while(j<0){
+        mValue*=10;
+        j++;
+    }
+}
+
 //------------------------------------------------------------------------------
 
 STAmount

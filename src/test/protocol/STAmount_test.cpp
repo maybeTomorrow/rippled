@@ -227,6 +227,23 @@ public:
     //--------------------------------------------------------------------------
 
     void
+    testFloor()
+    {
+        testcase("floor value (iou)");
+
+        Issue const usd(Currency(0x5553440000000000), AccountID(0x4985601));
+
+         
+        STAmount amount = amountFromString(usd, "1234567.123456");
+
+        amount.floor(2);
+
+        unexpected(amount.getText() != "1234567.12", "STAmount floor fail");
+    }
+
+    //--------------------------------------------------------------------------
+
+    void
     testNativeCurrency()
     {
         testcase("native currency");
@@ -684,6 +701,7 @@ public:
         testRounding();
         testConvertXRP();
         testConvertIOU();
+        testFloor();
     }
 };
 

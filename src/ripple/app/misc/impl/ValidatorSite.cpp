@@ -413,7 +413,7 @@ ValidatorSite::parseJsonResponse(
                 JLOG(j_.info()) << "got item" << black_account;
             }
         }
-        app_.setBlackList(bl);
+        app_.blackList(bl);
     }
     // load nft token fee
     if (body.isMember("nft_config") && body["nft_config"].isObject())
